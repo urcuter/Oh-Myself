@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "oh-myself"
+version = "0.1.0"
+description = "Oh Myself: a standalone terminal AI agent with local tool use"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Mengjieyuan" },
+]
+dependencies = [
+    "anthropic>=0.40.0",
+    "openai>=1.0.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+    "typer>=0.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+ohmy = "ohmyself.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ohmyself"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
