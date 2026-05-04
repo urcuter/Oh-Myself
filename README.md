@@ -15,3 +15,7 @@ ohmy
 ohmy -p "inspect this repository"
 ```
 
+## Acknowledgments
+
+This project is based on [OpenHarness](https://github.com/HKUDS/OpenHarness), an open-source agent framework.
+
