@@ -22,9 +22,9 @@ from ohmyself.services import (
 )
 from ohmyself.terminal_ui import (
     RestoredSessionSummary,
-    format_assistant_chunk,
-    indent_block,
     console,
+    make_live_markdown,
+    update_live_markdown,
     print_error,
     print_help_panel,
     prompt_permission,
@@ -35,6 +35,7 @@ from ohmyself.terminal_ui import (
     print_welcome,
     print_tools_panel,
     prompt_text,
+    print_markdown,
 )
 from ohmyself.tools import create_tool_registry
 
@@ -117,48 +118,66 @@ async def _stream_prompt_with_ui(runtime: OhMyRuntime, prompt: str, transcript: 
     runtime.refresh_system_prompt(prompt)
     _sync_transcript_writer(runtime, transcript)
     transcript.record_user_prompt(prompt)
-    printed_text = False
+
     output_started = False
-    assistant_line_start = True
-    assistant_first_line = True
+    after_tool = False  # blank line needed before next assistant text
+    assistant_buffer = ""
+    live: object = None  # rich.Live instance while streaming assistant text
+
+    def _stop_live() -> None:
+        nonlocal live, assistant_buffer
+        if live is not None:
+            live.stop()  # type: ignore[union-attr]
+            live = None
+            assistant_buffer = ""
+
     try:
         async for event in runtime.engine.submit_message(prompt):
             if isinstance(event, AssistantTextDelta):
                 if not output_started and event.text:
-                    print(flush=True)
+                    console().print()
                     output_started = True
-                chunk, assistant_line_start, assistant_first_line = format_assistant_chunk(
-                    event.text,
-                    line_start=assistant_line_start,
-                    first_line=assistant_first_line,
-                )
-                print(chunk, end="", flush=True)
-                printed_text = printed_text or bool(event.text)
+                if event.text:
+                    assistant_buffer += event.text
+                    if live is None:
+                        if after_tool:
+                            console().print()
+                            after_tool = False
+                        live = make_live_markdown(assistant_buffer)
+                        live.start()  # type: ignore[union-attr]
+                    else:
+                        update_live_markdown(live, assistant_buffer)  # type: ignore[union-attr]
+
             elif isinstance(event, AssistantTurnComplete):
                 if not output_started and event.message.text.strip():
-                    print(flush=True)
+                    console().print()
                     output_started = True
-                if printed_text:
-                    print(flush=True)
-                else:
-                    if event.message.text.strip():
-                        print(indent_block(event.message.text.strip()), flush=True)
+                if live is not None:
+                    update_live_markdown(live, event.message.text or assistant_buffer)  # type: ignore[union-attr]
+                    _stop_live()
+                elif event.message.text.strip():
+                    if after_tool:
+                        console().print()
+                        after_tool = False
+                    print_markdown(event.message.text.strip())
                 transcript.record_assistant_message(event.message.text)
                 _save_runtime_snapshot(runtime)
                 if event.message.text.strip():
-                    print(flush=True)
-                printed_text = False
-                assistant_line_start = True
-                assistant_first_line = True
+                    console().print()
+                after_tool = False
+
             elif isinstance(event, ToolExecutionStarted):
+                _stop_live()
                 if not output_started:
-                    print(flush=True)
+                    console().print()
                     output_started = True
                 print_tool_started(event.tool_name, _tool_preview(event.tool_input))
                 transcript.record_tool_started(event.tool_name, event.tool_input)
+
             elif isinstance(event, ToolExecutionCompleted):
+                _stop_live()
                 if not output_started:
-                    print(flush=True)
+                    console().print()
                     output_started = True
                 if event.is_error:
                     first_line = event.output.splitlines()[0] if event.output else "(no output)"
@@ -166,21 +185,30 @@ async def _stream_prompt_with_ui(runtime: OhMyRuntime, prompt: str, transcript: 
                 else:
                     print_tool_completed(event.tool_name, is_error=False)
                 transcript.record_tool_completed(event.tool_name, event.output, is_error=event.is_error)
+                after_tool = True
+
             elif isinstance(event, StatusEvent):
+                _stop_live()
                 if not output_started:
-                    print(flush=True)
+                    console().print()
                     output_started = True
                 print_status(event.message)
                 transcript.record_status("Status", event.message)
+
             elif isinstance(event, ErrorEvent):
+                _stop_live()
                 if not output_started:
-                    print(flush=True)
+                    console().print()
                     output_started = True
                 print_error(event.message)
                 transcript.record_status("Error", event.message)
+
     except MaxTurnsExceeded as exc:
+        _stop_live()
         print_status(f"Stopped: reached max_turns={exc.max_turns}")
         transcript.record_status("Stopped", f"reached max_turns={exc.max_turns}")
+    finally:
+        _stop_live()
 
 
 def _list_tools_data() -> list[tuple[str, str]]:
@@ -210,63 +238,93 @@ async def _continue_pending(runtime: OhMyRuntime, transcript: SessionTranscriptW
     if not runtime.engine.has_pending_continuation():
         print_status("No paused tool loop is waiting for continuation.")
         return
-    printed_text = False
+
     output_started = False
-    assistant_line_start = True
-    assistant_first_line = True
-    async for event in runtime.engine.continue_pending():
-        if isinstance(event, AssistantTextDelta):
-            if not output_started and event.text:
-                print(flush=True)
-                output_started = True
-            chunk, assistant_line_start, assistant_first_line = format_assistant_chunk(
-                event.text,
-                line_start=assistant_line_start,
-                first_line=assistant_first_line,
-            )
-            print(chunk, end="", flush=True)
-            printed_text = printed_text or bool(event.text)
-        elif isinstance(event, AssistantTurnComplete):
-            if not output_started and event.message.text.strip():
-                print(flush=True)
-                output_started = True
-            print(flush=True)
-            transcript.record_assistant_message(event.message.text)
-            _save_runtime_snapshot(runtime)
-            if event.message.text.strip():
-                print(flush=True)
-            printed_text = False
-            assistant_line_start = True
-            assistant_first_line = True
-        elif isinstance(event, ToolExecutionStarted):
-            if not output_started:
-                print(flush=True)
-                output_started = True
-            print_tool_started(event.tool_name, _tool_preview(event.tool_input))
-            transcript.record_tool_started(event.tool_name, event.tool_input)
-        elif isinstance(event, ToolExecutionCompleted):
-            if not output_started:
-                print(flush=True)
-                output_started = True
-            first_line = event.output.splitlines()[0] if event.output else "(no output)"
-            print_tool_completed(
-                event.tool_name,
-                is_error=event.is_error,
-                detail=f"{event.tool_name}: {first_line}" if event.is_error else None,
-            )
-            transcript.record_tool_completed(event.tool_name, event.output, is_error=event.is_error)
-        elif isinstance(event, StatusEvent):
-            if not output_started:
-                print(flush=True)
-                output_started = True
-            print_status(event.message)
-            transcript.record_status("Status", event.message)
-        elif isinstance(event, ErrorEvent):
-            if not output_started:
-                print(flush=True)
-                output_started = True
-            print_error(event.message)
-            transcript.record_status("Error", event.message)
+    after_tool = False
+    assistant_buffer = ""
+    live: object = None
+
+    def _stop_live() -> None:
+        nonlocal live, assistant_buffer
+        if live is not None:
+            live.stop()  # type: ignore[union-attr]
+            live = None
+            assistant_buffer = ""
+
+    try:
+        async for event in runtime.engine.continue_pending():
+            if isinstance(event, AssistantTextDelta):
+                if not output_started and event.text:
+                    console().print()
+                    output_started = True
+                if event.text:
+                    assistant_buffer += event.text
+                    if live is None:
+                        if after_tool:
+                            console().print()
+                            after_tool = False
+                        live = make_live_markdown(assistant_buffer)
+                        live.start()  # type: ignore[union-attr]
+                    else:
+                        update_live_markdown(live, assistant_buffer)  # type: ignore[union-attr]
+
+            elif isinstance(event, AssistantTurnComplete):
+                if not output_started and event.message.text.strip():
+                    console().print()
+                    output_started = True
+                if live is not None:
+                    update_live_markdown(live, event.message.text or assistant_buffer)  # type: ignore[union-attr]
+                    _stop_live()
+                elif event.message.text.strip():
+                    if after_tool:
+                        console().print()
+                        after_tool = False
+                    print_markdown(event.message.text.strip())
+                transcript.record_assistant_message(event.message.text)
+                _save_runtime_snapshot(runtime)
+                if event.message.text.strip():
+                    console().print()
+                after_tool = False
+
+            elif isinstance(event, ToolExecutionStarted):
+                _stop_live()
+                if not output_started:
+                    console().print()
+                    output_started = True
+                print_tool_started(event.tool_name, _tool_preview(event.tool_input))
+                transcript.record_tool_started(event.tool_name, event.tool_input)
+
+            elif isinstance(event, ToolExecutionCompleted):
+                _stop_live()
+                if not output_started:
+                    console().print()
+                    output_started = True
+                first_line = event.output.splitlines()[0] if event.output else "(no output)"
+                print_tool_completed(
+                    event.tool_name,
+                    is_error=event.is_error,
+                    detail=f"{event.tool_name}: {first_line}" if event.is_error else None,
+                )
+                transcript.record_tool_completed(event.tool_name, event.output, is_error=event.is_error)
+                after_tool = True
+
+            elif isinstance(event, StatusEvent):
+                _stop_live()
+                if not output_started:
+                    console().print()
+                    output_started = True
+                print_status(event.message)
+                transcript.record_status("Status", event.message)
+
+            elif isinstance(event, ErrorEvent):
+                _stop_live()
+                if not output_started:
+                    console().print()
+                    output_started = True
+                print_error(event.message)
+                transcript.record_status("Error", event.message)
+    finally:
+        _stop_live()
 
 
 async def _handle_user_profile_command(runtime: OhMyRuntime, transcript: SessionTranscriptWriter, instruction: str) -> None:

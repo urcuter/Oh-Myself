@@ -8,6 +8,8 @@ import re
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx
+
 from openai import AsyncOpenAI
 
 from ohmyself.api.client import (
@@ -145,8 +147,10 @@ class OpenAICompatibleClient:
         normalized_base_url = _normalize_openai_base_url(base_url)
         if normalized_base_url:
             kwargs["base_url"] = normalized_base_url
-        if timeout is not None:
-            kwargs["timeout"] = timeout
+        # For streaming, read timeout must be None (no limit between chunks).
+        # connect/write/pool keep the caller-supplied value (default 30 s).
+        connect_timeout = timeout if timeout is not None else 30.0
+        kwargs["timeout"] = httpx.Timeout(connect_timeout, read=None)
         self._client = AsyncOpenAI(**kwargs)
 
     async def stream_message(self, request: ApiMessageRequest) -> AsyncIterator[ApiStreamEvent]:
@@ -232,6 +236,11 @@ class OpenAICompatibleClient:
                     "input_tokens": chunk.usage.prompt_tokens or 0,
                     "output_tokens": chunk.usage.completion_tokens or 0,
                 }
+
+        # Flush any text left in think_buffer that never matched a <think> tag.
+        if think_buffer:
+            collected_content += think_buffer
+            yield ApiTextDeltaEvent(text=think_buffer)
 
         content: list[ContentBlock] = []
         if collected_content:

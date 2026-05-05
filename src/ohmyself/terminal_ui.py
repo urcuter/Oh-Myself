@@ -6,6 +6,9 @@ from pathlib import Path
 
 from rich import box
 from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
@@ -24,7 +27,7 @@ MODEL_MUTED = "grey50"
 LOGO_DARK = "grey54"
 LOGO_LIGHT = "grey86"
 
-_CONSOLE = Console(highlight=False, soft_wrap=True)
+_CONSOLE = Console(highlight=True, soft_wrap=True)
 EVENT_INDENT = "      "
 ASSISTANT_INDENT = "    "
 EVENT_PREFIX = "| "
@@ -40,6 +43,10 @@ class RestoredSessionSummary:
 
 def console() -> Console:
     return _CONSOLE
+
+
+def print_markdown(text: str) -> None:
+    _CONSOLE.print(_padded_md(text))
 
 
 def prompt_text(*, model_name: str) -> Text:
@@ -183,7 +190,8 @@ def print_status_panel(rows: list[tuple[str, str]]) -> None:
 
 def prompt_permission(tool_name: str, reason: str) -> bool:
     _CONSOLE.print(Text.assemble(EVENT_INDENT, EVENT_PREFIX, ("[permission] ", MUTED), (tool_name, "bold")))
-    _CONSOLE.print(Text.assemble(EVENT_INDENT, EVENT_PREFIX, reason))
+    for line in reason.splitlines():
+        _CONSOLE.print(Text.assemble(EVENT_INDENT, EVENT_PREFIX, (line, MUTED)))
     return Confirm.ask(f"{EVENT_INDENT}{EVENT_PREFIX}Allow this tool call?", console=_CONSOLE, default=False)
 
 
@@ -244,6 +252,27 @@ def _short_model_name(value: str) -> str:
     if len(compact) <= 24:
         return compact
     return compact[:24]
+
+
+_MD_INDENT = 4  # left-pad columns for assistant Markdown output
+
+
+def _padded_md(text: str) -> Padding:
+    return Padding(Markdown(text or " "), pad=(0, 0, 0, _MD_INDENT))
+
+
+def make_live_markdown(text: str) -> Live:
+    """Return a Rich Live context that renders *text* as indented Markdown.
+
+    The caller is responsible for starting/stopping the Live object and for
+    calling live.update(_padded_md(new_text)) as more text arrives.
+    """
+    return Live(_padded_md(text), console=_CONSOLE, refresh_per_second=15, vertical_overflow="visible")
+
+
+def update_live_markdown(live: Live, text: str) -> None:
+    """Update a running Live block with new Markdown text."""
+    live.update(_padded_md(text))
 
 
 def _logo_lines() -> list[Text]:
