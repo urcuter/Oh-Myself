@@ -12,7 +12,17 @@ from ohmyself.api.client import ApiMessageCompleteEvent, ApiMessageRequest, ApiR
 from ohmyself.api.usage import UsageSnapshot
 from ohmyself.config.paths import get_data_dir
 from ohmyself.engine.messages import ConversationMessage, ToolResultBlock
-from ohmyself.engine.stream_events import AssistantTextDelta, AssistantTurnComplete, ErrorEvent, StatusEvent, StreamEvent, ToolExecutionCompleted, ToolExecutionStarted
+from ohmyself.engine.stream_events import (
+    AssistantTextDelta,
+    AssistantTurnComplete,
+    ErrorEvent,
+    StatusEvent,
+    StreamEvent,
+    SubagentCompleted,
+    SubagentStarted,
+    ToolExecutionCompleted,
+    ToolExecutionStarted,
+)
 from ohmyself.permissions.checker import PermissionChecker
 from ohmyself.services.tool_outputs import tool_output_inline_chars, tool_output_preview_chars
 from ohmyself.tools.base import ToolExecutionContext, ToolRegistry
@@ -38,6 +48,12 @@ class QueryContext:
     permission_prompt: PermissionPrompt | None = None
     max_turns: int | None = 200
     tool_metadata: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class _ExecutedToolResult:
+    block: ToolResultBlock
+    metadata: dict[str, object]
 
 
 def remember_user_goal(tool_metadata: dict[str, object] | None, prompt: str) -> None:
@@ -116,12 +132,18 @@ async def run_query(context: QueryContext, messages: list[ConversationMessage]) 
         if len(tool_calls) == 1:
             tc = tool_calls[0]
             yield ToolExecutionStarted(tool_name=tc.name, tool_input=tc.input), None
+            if tc.name == "delegate_task":
+                yield _subagent_started_event(tc.id, tc.input), None
             result = await _execute_tool_call(context, tc.name, tc.id, tc.input)
-            yield ToolExecutionCompleted(tool_name=tc.name, output=result.content, is_error=result.is_error), None
-            tool_results = [result]
+            yield ToolExecutionCompleted(tool_name=tc.name, output=result.block.content, is_error=result.block.is_error), None
+            if tc.name == "delegate_task":
+                yield _subagent_completed_event(tc.id, tc.input, result), None
+            tool_results = [result.block]
         else:
             for tc in tool_calls:
                 yield ToolExecutionStarted(tool_name=tc.name, tool_input=tc.input), None
+                if tc.name == "delegate_task":
+                    yield _subagent_started_event(tc.id, tc.input), None
             raw_results = await asyncio.gather(
                 *[_execute_tool_call(context, tc.name, tc.id, tc.input) for tc in tool_calls],
                 return_exceptions=True,
@@ -129,24 +151,36 @@ async def run_query(context: QueryContext, messages: list[ConversationMessage]) 
             tool_results = []
             for tc, result in zip(tool_calls, raw_results):
                 if isinstance(result, BaseException):
-                    result = ToolResultBlock(tool_use_id=tc.id, content=f"Tool {tc.name} failed: {type(result).__name__}: {result}", is_error=True)
-                tool_results.append(result)
+                    result = _ExecutedToolResult(
+                        block=ToolResultBlock(tool_use_id=tc.id, content=f"Tool {tc.name} failed: {type(result).__name__}: {result}", is_error=True),
+                        metadata={},
+                    )
+                tool_results.append(result.block)
             for tc, result in zip(tool_calls, tool_results):
                 yield ToolExecutionCompleted(tool_name=tc.name, output=result.content, is_error=result.is_error), None
+            for tc, result in zip(tool_calls, raw_results):
+                if isinstance(result, _ExecutedToolResult) and tc.name == "delegate_task":
+                    yield _subagent_completed_event(tc.id, tc.input, result), None
         messages.append(ConversationMessage(role="user", content=tool_results))
     if context.max_turns is not None:
         raise MaxTurnsExceeded(context.max_turns)
     raise RuntimeError("Query loop exited unexpectedly")
 
 
-async def _execute_tool_call(context: QueryContext, tool_name: str, tool_use_id: str, tool_input: dict[str, object]) -> ToolResultBlock:
+async def _execute_tool_call(context: QueryContext, tool_name: str, tool_use_id: str, tool_input: dict[str, object]) -> _ExecutedToolResult:
     tool = context.tool_registry.get(tool_name)
     if tool is None:
-        return ToolResultBlock(tool_use_id=tool_use_id, content=f"Unknown tool: {tool_name}", is_error=True)
+        return _ExecutedToolResult(
+            block=ToolResultBlock(tool_use_id=tool_use_id, content=f"Unknown tool: {tool_name}", is_error=True),
+            metadata={},
+        )
     try:
         parsed_input = tool.input_model.model_validate(tool_input)
     except Exception as exc:
-        return ToolResultBlock(tool_use_id=tool_use_id, content=f"Invalid input for {tool_name}: {exc}", is_error=True)
+        return _ExecutedToolResult(
+            block=ToolResultBlock(tool_use_id=tool_use_id, content=f"Invalid input for {tool_name}: {exc}", is_error=True),
+            metadata={},
+        )
     file_path = _resolve_permission_file_path(context.cwd, tool_input, parsed_input)
     command = _extract_permission_command(tool_input, parsed_input)
     decision = context.permission_checker.evaluate(
@@ -158,14 +192,30 @@ async def _execute_tool_call(context: QueryContext, tool_name: str, tool_use_id:
     if not decision.allowed:
         if decision.requires_confirmation and context.permission_prompt is not None:
             if not await context.permission_prompt(tool_name, decision.reason):
-                return ToolResultBlock(tool_use_id=tool_use_id, content=decision.reason or f"Permission denied for {tool_name}", is_error=True)
+                return _ExecutedToolResult(
+                    block=ToolResultBlock(tool_use_id=tool_use_id, content=decision.reason or f"Permission denied for {tool_name}", is_error=True),
+                    metadata={},
+                )
         else:
-            return ToolResultBlock(tool_use_id=tool_use_id, content=decision.reason or f"Permission denied for {tool_name}", is_error=True)
+            return _ExecutedToolResult(
+                block=ToolResultBlock(tool_use_id=tool_use_id, content=decision.reason or f"Permission denied for {tool_name}", is_error=True),
+                metadata={},
+            )
     result = await tool.execute(
         parsed_input,
         ToolExecutionContext(
             cwd=context.cwd,
-            metadata={"tool_registry": context.tool_registry, **(context.tool_metadata or {})},
+            metadata={
+                "api_client": context.api_client,
+                "tool_registry": context.tool_registry,
+                "permission_checker": context.permission_checker,
+                "model": context.model,
+                "system_prompt": context.system_prompt,
+                "max_tokens": context.max_tokens,
+                "permission_prompt": context.permission_prompt,
+                "runtime_tool_metadata": context.tool_metadata,
+                **(context.tool_metadata or {}),
+            },
         ),
     )
     inline_output, artifact_path = _offload_tool_output_if_needed(tool_name=tool_name, tool_use_id=tool_use_id, output=result.output)
@@ -173,7 +223,39 @@ async def _execute_tool_call(context: QueryContext, tool_name: str, tool_use_id:
         artifacts = context.tool_metadata.setdefault("active_artifacts", [])
         if isinstance(artifacts, list):
             artifacts.append(str(artifact_path))
-    return ToolResultBlock(tool_use_id=tool_use_id, content=inline_output, is_error=result.is_error)
+    return _ExecutedToolResult(
+        block=ToolResultBlock(tool_use_id=tool_use_id, content=inline_output, is_error=result.is_error),
+        metadata=result.metadata,
+    )
+
+
+def _subagent_started_event(tool_use_id: str, tool_input: dict[str, object]) -> SubagentStarted:
+    role = str(tool_input.get("role") or "specialist")
+    task = str(tool_input.get("task") or "").strip()
+    read_only = bool(tool_input.get("read_only", True))
+    return SubagentStarted(tool_use_id=tool_use_id, role=role, task=task, read_only=read_only)
+
+
+def _subagent_completed_event(tool_use_id: str, tool_input: dict[str, object], result: _ExecutedToolResult) -> SubagentCompleted:
+    subagent = result.metadata.get("subagent") if isinstance(result.metadata, dict) else None
+    if isinstance(subagent, dict):
+        session_id = str(subagent.get("session_id") or "")
+        role = str(subagent.get("role") or tool_input.get("role") or "specialist")
+        summary = str(subagent.get("summary") or result.block.content).strip()
+        timed_out = bool(subagent.get("timed_out", False))
+    else:
+        session_id = ""
+        role = str(tool_input.get("role") or "specialist")
+        summary = result.block.content.strip()
+        timed_out = False
+    return SubagentCompleted(
+        tool_use_id=tool_use_id,
+        session_id=session_id,
+        role=role,
+        summary=summary,
+        is_error=result.block.is_error,
+        timed_out=timed_out,
+    )
 
 
 def _resolve_permission_file_path(cwd: Path, raw_input: dict[str, object], parsed_input: object) -> str | None:
@@ -202,4 +284,3 @@ def _extract_permission_command(raw_input: dict[str, object], parsed_input: obje
     if isinstance(value, str) and value.strip():
         return value
     return None
-

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,10 @@ class OhMyRuntime:
         self.session_id = uuid4().hex[:12]
         self.session_started_at = datetime.now().astimezone()
         self.engine.tool_metadata["session_id"] = self.session_id
+        self.engine.tool_metadata["agent_depth"] = 0
+        self.engine.tool_metadata["agent_lineage"] = [self.session_id]
+        self.engine.tool_metadata["subagent_runs"] = []
+        self.engine.tool_metadata["subagent_semaphore"] = asyncio.Semaphore(2)
         return self.session_id
 
     def restore_session_snapshot(self, snapshot: dict[str, Any]) -> None:
@@ -59,6 +64,15 @@ class OhMyRuntime:
         session_id = str(snapshot.get("session_id") or self.session_id)
         self.session_id = session_id
         self.engine.tool_metadata["session_id"] = session_id
+        restored_tool_metadata = snapshot.get("tool_metadata")
+        if isinstance(restored_tool_metadata, dict):
+            for key in ("active_profile", "active_artifacts", "last_goal", "subagent_runs", "agent_depth", "agent_lineage"):
+                if key in restored_tool_metadata:
+                    self.engine.tool_metadata[key] = restored_tool_metadata[key]
+        self.engine.tool_metadata.setdefault("agent_depth", 0)
+        self.engine.tool_metadata.setdefault("agent_lineage", [session_id])
+        self.engine.tool_metadata.setdefault("subagent_runs", [])
+        self.engine.tool_metadata.setdefault("subagent_semaphore", asyncio.Semaphore(2))
         started_at = snapshot.get("session_started_at")
         if isinstance(started_at, str) and started_at.strip():
             try:
@@ -158,6 +172,10 @@ async def build_runtime(
             "tool_registry": tool_registry,
             "active_profile": profile_name,
             "active_artifacts": [],
+            "agent_depth": 0,
+            "agent_lineage": [session_id],
+            "subagent_runs": [],
+            "subagent_semaphore": asyncio.Semaphore(2),
         },
     )
     return OhMyRuntime(

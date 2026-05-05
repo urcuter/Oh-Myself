@@ -26,6 +26,10 @@ class PermissionChecker:
     def __init__(self, settings: PermissionSettings) -> None:
         self._settings = settings
 
+    def with_mode(self, mode: PermissionMode | str) -> "PermissionChecker":
+        resolved = PermissionMode(mode).value
+        return PermissionChecker(self._settings.model_copy(update={"mode": resolved}))
+
     def evaluate(
         self,
         tool_name: str,
@@ -62,4 +66,3 @@ class PermissionChecker:
             requires_confirmation=True,
             reason="Mutating tools require user confirmation in default mode.",
         )
-

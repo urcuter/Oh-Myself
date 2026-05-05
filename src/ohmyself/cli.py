@@ -10,7 +10,16 @@ from ohmyself import __version__
 from ohmyself.auth import AuthManager
 from ohmyself.config import ProviderProfile, get_home_dir, get_memory_dir, get_settings_path, load_settings
 from ohmyself.engine.query import MaxTurnsExceeded
-from ohmyself.engine.stream_events import AssistantTextDelta, AssistantTurnComplete, ErrorEvent, StatusEvent, ToolExecutionCompleted, ToolExecutionStarted
+from ohmyself.engine.stream_events import (
+    AssistantTextDelta,
+    AssistantTurnComplete,
+    ErrorEvent,
+    StatusEvent,
+    SubagentCompleted,
+    SubagentStarted,
+    ToolExecutionCompleted,
+    ToolExecutionStarted,
+)
 from ohmyself.permissions import PermissionMode
 from ohmyself.runtime import OhMyRuntime, build_runtime
 from ohmyself.services import (
@@ -36,6 +45,8 @@ from ohmyself.terminal_ui import (
     print_tools_panel,
     prompt_text,
     print_markdown,
+    print_subagent_completed,
+    print_subagent_started,
 )
 from ohmyself.tools import create_tool_registry
 
@@ -187,6 +198,31 @@ async def _stream_prompt_with_ui(runtime: OhMyRuntime, prompt: str, transcript: 
                 transcript.record_tool_completed(event.tool_name, event.output, is_error=event.is_error)
                 after_tool = True
 
+            elif isinstance(event, SubagentStarted):
+                _stop_live()
+                if not output_started:
+                    console().print()
+                    output_started = True
+                print_subagent_started(event.role, event.task, read_only=event.read_only)
+                transcript.record_status("Subagent", f"started role={event.role} read_only={event.read_only} task={event.task}")
+
+            elif isinstance(event, SubagentCompleted):
+                _stop_live()
+                if not output_started:
+                    console().print()
+                    output_started = True
+                print_subagent_completed(
+                    event.role,
+                    event.summary,
+                    session_id=event.session_id,
+                    is_error=event.is_error,
+                    timed_out=event.timed_out,
+                )
+                transcript.record_status(
+                    "Subagent",
+                    f"completed role={event.role} session={event.session_id or '(unknown)'} error={event.is_error} timeout={event.timed_out}",
+                )
+
             elif isinstance(event, StatusEvent):
                 _stop_live()
                 if not output_started:
@@ -307,6 +343,31 @@ async def _continue_pending(runtime: OhMyRuntime, transcript: SessionTranscriptW
                 )
                 transcript.record_tool_completed(event.tool_name, event.output, is_error=event.is_error)
                 after_tool = True
+
+            elif isinstance(event, SubagentStarted):
+                _stop_live()
+                if not output_started:
+                    console().print()
+                    output_started = True
+                print_subagent_started(event.role, event.task, read_only=event.read_only)
+                transcript.record_status("Subagent", f"started role={event.role} read_only={event.read_only} task={event.task}")
+
+            elif isinstance(event, SubagentCompleted):
+                _stop_live()
+                if not output_started:
+                    console().print()
+                    output_started = True
+                print_subagent_completed(
+                    event.role,
+                    event.summary,
+                    session_id=event.session_id,
+                    is_error=event.is_error,
+                    timed_out=event.timed_out,
+                )
+                transcript.record_status(
+                    "Subagent",
+                    f"completed role={event.role} session={event.session_id or '(unknown)'} error={event.is_error} timeout={event.timed_out}",
+                )
 
             elif isinstance(event, StatusEvent):
                 _stop_live()

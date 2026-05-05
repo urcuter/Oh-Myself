@@ -41,7 +41,7 @@ def test_default_settings_use_standalone_profiles(tmp_path: Path, monkeypatch):
 
 def test_tool_registry_is_reduced():
     names = {tool.name for tool in create_tool_registry().list_tools()}
-    assert {"bash", "read_file", "write_file", "edit_file", "glob", "grep", "todo_write", "tool_search"} <= names
+    assert {"bash", "read_file", "write_file", "edit_file", "glob", "grep", "delegate_task", "todo_write", "tool_search"} <= names
 
 
 def test_runtime_builds_without_openharness(tmp_path: Path, monkeypatch):

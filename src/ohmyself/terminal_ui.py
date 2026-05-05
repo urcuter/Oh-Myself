@@ -132,6 +132,39 @@ def print_tool_completed(tool_name: str, *, is_error: bool, detail: str | None =
     _CONSOLE.print(body)
 
 
+def print_subagent_started(role: str, task: str, *, read_only: bool) -> None:
+    label = Text("subagent", style=f"bold {INFO}")
+    mode = "read-only" if read_only else "write"
+    body = Text.assemble(
+        EVENT_INDENT,
+        EVENT_PREFIX,
+        "[",
+        label,
+        ("] ", MUTED),
+        (role or "specialist", "bold"),
+        (" ", MUTED),
+        (f"({mode})", MUTED),
+    )
+    _CONSOLE.print(body)
+    if task:
+        _CONSOLE.print(Text.assemble(EVENT_INDENT, EVENT_PREFIX, ("  task ", MUTED), (_truncate(task, 120), MUTED)))
+
+
+def print_subagent_completed(role: str, summary: str, *, session_id: str, is_error: bool, timed_out: bool) -> None:
+    if is_error:
+        label = Text("subagent:error", style=f"bold {ERROR}")
+    else:
+        label = Text("subagent:done", style=f"bold {SUCCESS}")
+    suffix = " timed out" if timed_out else ""
+    title = f"{role or 'specialist'}{suffix}"
+    if session_id:
+        title += f" [{session_id}]"
+    body = Text.assemble(EVENT_INDENT, EVENT_PREFIX, "[", label, ("] ", MUTED), title)
+    _CONSOLE.print(body)
+    if summary:
+        _CONSOLE.print(Text.assemble(EVENT_INDENT, EVENT_PREFIX, ("  summary ", MUTED), (_truncate(summary, 160), MUTED)))
+
+
 def print_help_panel() -> None:
     table = Table(box=None, show_header=False, expand=True, padding=(0, 1))
     table.add_column(style=f"bold {ACCENT}", no_wrap=True)

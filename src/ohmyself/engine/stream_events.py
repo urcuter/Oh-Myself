@@ -32,6 +32,24 @@ class ToolExecutionCompleted:
 
 
 @dataclass(frozen=True)
+class SubagentStarted:
+    tool_use_id: str
+    role: str
+    task: str
+    read_only: bool
+
+
+@dataclass(frozen=True)
+class SubagentCompleted:
+    tool_use_id: str
+    session_id: str
+    role: str
+    summary: str
+    is_error: bool = False
+    timed_out: bool = False
+
+
+@dataclass(frozen=True)
 class ErrorEvent:
     message: str
     recoverable: bool = True
@@ -47,7 +65,8 @@ StreamEvent = (
     | AssistantTurnComplete
     | ToolExecutionStarted
     | ToolExecutionCompleted
+    | SubagentStarted
+    | SubagentCompleted
     | ErrorEvent
     | StatusEvent
 )
-
