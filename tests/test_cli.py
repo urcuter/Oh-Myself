@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from ohmyself.api.client import ApiMessageCompleteEvent
 from ohmyself.api.usage import UsageSnapshot
-from ohmyself.cli import app
+from ohmyself.cli import _handle_restore_command, app, run_repl
 from ohmyself.config import load_settings
 from ohmyself.engine.messages import ConversationMessage, TextBlock
 from ohmyself.runtime import build_runtime
+from ohmyself.services.session_storage import save_session_snapshot
 from ohmyself.tools import create_tool_registry
 
 
@@ -59,3 +61,108 @@ def test_runtime_builds_without_openharness(tmp_path: Path, monkeypatch):
         assert runtime.engine.tool_metadata["session_id"] == runtime.session_id
 
     asyncio.run(_build())
+
+
+class _TranscriptStub:
+    def __init__(self) -> None:
+        self.resets: list[tuple[str, str, str]] = []
+        self.statuses: list[tuple[str, str]] = []
+
+    def reset_session(self, *, session_id: str, cwd: str, model: str, started_at: datetime) -> None:
+        del started_at
+        self.resets.append((session_id, cwd, model))
+
+    def record_status(self, category: str, message: str) -> None:
+        self.statuses.append((category, message))
+
+
+def test_restore_command_restores_latest_workspace_session(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OHMYSELF_HOME", str(tmp_path / "home"))
+
+    async def _build_and_restore():
+        runtime = await build_runtime(cwd=str(tmp_path / "project"), api_client=_StaticApiClient(), permission_mode="full_auto")
+        save_session_snapshot(
+            cwd=runtime.cwd,
+            model=runtime.engine.model,
+            messages=[
+                ConversationMessage.from_user_text("hello"),
+                ConversationMessage(role="assistant", content=[TextBlock(text="world")]),
+            ],
+            usage=UsageSnapshot(input_tokens=3, output_tokens=5),
+            session_id="sess-restore",
+            session_started_at=datetime.fromisoformat("2026-05-04T10:00:00+08:00").isoformat(),
+            tool_metadata=runtime.engine.tool_metadata,
+        )
+        transcript = _TranscriptStub()
+        messages_before = runtime.engine.messages
+        assert messages_before == []
+
+        _handle_restore_command(runtime, transcript)
+
+        assert [message.text for message in runtime.engine.messages] == ["hello", "world"]
+        assert runtime.session_id == "sess-restore"
+        assert transcript.resets == [("sess-restore", runtime.cwd, runtime.current_model())]
+        assert transcript.statuses[-1] == ("Session", "Restored session sess-restore with 2 messages.")
+
+    asyncio.run(_build_and_restore())
+
+
+def test_run_repl_does_not_auto_restore(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("OHMYSELF_HOME", str(tmp_path / "home"))
+
+    class _FakeSettings:
+        class _Permission:
+            mode = "full_auto"
+
+        permission = _Permission()
+
+        def resolve_profile(self, active_profile=None):
+            del active_profile
+            return "openai-compatible", type("Profile", (), {"label": "OpenAI Compatible"})()
+
+    class _FakeRuntime:
+        def __init__(self) -> None:
+            self.cwd = str(tmp_path)
+            self.session_id = "sess-new"
+            self.session_started_at = datetime.now().astimezone()
+            self.settings_overrides = {}
+
+        def current_settings(self):
+            return _FakeSettings()
+
+        def current_model(self) -> str:
+            return "gpt-test"
+
+    async def _fake_build_runtime(**kwargs):
+        del kwargs
+        return _FakeRuntime()
+
+    called = False
+
+    def _unexpected_restore(runtime):
+        del runtime
+        nonlocal called
+        called = True
+        raise AssertionError("_restore_latest_session should not be called on startup")
+
+    monkeypatch.setattr("ohmyself.cli.build_runtime", _fake_build_runtime)
+    monkeypatch.setattr("ohmyself.cli._restore_latest_session", _unexpected_restore)
+    monkeypatch.setattr("ohmyself.cli._build_transcript_writer", lambda runtime: _TranscriptStub())
+    monkeypatch.setattr("ohmyself.cli.print_welcome", lambda **kwargs: None)
+    monkeypatch.setattr("ohmyself.cli.prompt_input", lambda **kwargs: "/exit")
+
+    asyncio.run(
+        run_repl(
+            cwd=str(tmp_path),
+            model=None,
+            max_turns=None,
+            base_url=None,
+            system_prompt=None,
+            api_key=None,
+            api_format=None,
+            permission_mode=None,
+            active_profile=None,
+        )
+    )
+
+    assert called is False

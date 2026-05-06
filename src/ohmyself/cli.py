@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
+from datetime import date
 from pathlib import Path
 
 import typer
@@ -23,17 +25,30 @@ from ohmyself.engine.stream_events import (
 from ohmyself.permissions import PermissionMode
 from ohmyself.runtime import OhMyRuntime, build_runtime
 from ohmyself.services import (
+    MAX_ACTIVE_GOALS,
     SessionTranscriptWriter,
     append_experience,
+    append_goal,
+    append_plan,
     build_experience_answer_prompt,
     build_experience_organize_prompt,
     build_experience_retrieval_task,
+    build_plan_organize_prompt,
+    complete_goal,
+    format_goals_markdown,
     generate_user_profile,
     get_experience_dir,
     has_experience_content,
+    has_plan_content,
+    has_plan_inbox_content,
+    list_goals,
     load_latest_session_snapshot,
+    read_plan_inbox,
+    read_today_plan,
     save_session_snapshot,
     save_user_profile,
+    stop_goal,
+    update_goal_progress,
 )
 from ohmyself.terminal_ui import (
     RestoredSessionSummary,
@@ -44,6 +59,7 @@ from ohmyself.terminal_ui import (
     print_help_panel,
     prompt_permission,
     print_status,
+    print_context_snapshot,
     print_status_panel,
     print_tool_completed,
     print_tool_started,
@@ -127,6 +143,19 @@ def _restore_latest_session(runtime: OhMyRuntime) -> RestoredSessionSummary | No
         summary=str(snapshot.get("summary") or "").strip(),
         updated_at=float(snapshot["updated_at"]) if isinstance(snapshot.get("updated_at"), (int, float)) else None,
     )
+
+
+def _handle_restore_command(runtime: OhMyRuntime, transcript: SessionTranscriptWriter) -> None:
+    restored_summary = _restore_latest_session(runtime)
+    if restored_summary is None:
+        message = "No saved session is available for this workspace."
+        print_status(message)
+        transcript.record_status("Session", message)
+        return
+    _sync_transcript_writer(runtime, transcript)
+    message = f"Restored session {restored_summary.session_id} with {restored_summary.message_count} messages."
+    print_status(message)
+    transcript.record_status("Session", message)
 
 
 async def _stream_prompt(runtime: OhMyRuntime, prompt: str, transcript: SessionTranscriptWriter) -> None:
@@ -276,6 +305,34 @@ def _runtime_status_rows(runtime: OhMyRuntime) -> list[tuple[str, str]]:
         ("workspace", runtime.cwd),
         ("session", runtime.session_id),
     ]
+
+
+def _active_goals():
+    return [goal for goal in list_goals() if goal.status == "active"]
+
+
+def _active_goal_topics() -> list[str]:
+    topics: list[str] = []
+    seen: set[str] = set()
+    for goal in _active_goals():
+        topic = goal.topic.strip()
+        if topic not in seen:
+            seen.add(topic)
+            topics.append(topic)
+    return topics
+
+
+def _build_plan_prompt() -> str:
+    active_goals = _active_goals()
+    goal_context = "\n".join(
+        f"- {goal.topic}: {goal.description or '(no description)'}"
+        for goal in active_goals
+    )
+    return build_plan_organize_prompt(
+        goal_context=goal_context,
+        active_goal_count=len(active_goals),
+        goal_limit=MAX_ACTIVE_GOALS,
+    )
 
 
 async def _continue_pending(runtime: OhMyRuntime, transcript: SessionTranscriptWriter) -> None:
@@ -507,6 +564,176 @@ async def _handle_experience_command(runtime: OhMyRuntime, transcript: SessionTr
     await _stream_prompt(runtime, build_experience_answer_prompt(cleaned, retrieval_report), transcript)
 
 
+async def _handle_plan_command(
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+    instruction: str,
+) -> None:
+    cleaned = instruction.strip()
+    if not cleaned:
+        if not has_plan_content() and has_plan_inbox_content():
+            await _stream_prompt(runtime, _build_plan_prompt(), transcript)
+        content, path = read_today_plan()
+        if not content.strip():
+            print_status(f"No plan yet. Use /plan [content] to add an item. File: {path}")
+            return
+        print_markdown(content)
+        return
+    content = cleaned[len("add ") :].strip() if cleaned.startswith("add ") else cleaned
+    if not content:
+        print_error("Usage: /plan [content]")
+        return
+    try:
+        entry = append_plan(content)
+    except Exception as exc:
+        print_error(f"Failed to add plan entry: {exc}")
+        transcript.record_status("Plan", f"Failed to add plan entry: {exc}")
+        return
+    transcript.record_status("Plan", f"Added {entry.entry_id} to {entry.path}")
+    await _stream_prompt(runtime, _build_plan_prompt(), transcript)
+    organized, _ = read_today_plan()
+    if not organized.strip():
+        inbox_content, inbox_path = read_plan_inbox()
+        print_error(f"Plan organize did not produce visible content. Inbox preserved at: {inbox_path}")
+        transcript.record_status("Plan", f"Organize produced no visible content. Inbox preserved at {inbox_path}")
+        if inbox_content.strip():
+            print_markdown(inbox_content)
+        return
+    print_context_snapshot(
+        f"Updated plan with: {content}",
+        title="Today's Plan",
+        markdown=organized,
+    )
+
+
+async def _handle_goal_command(
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+    instruction: str,
+) -> None:
+    del runtime
+    cleaned = instruction.strip()
+
+    if not cleaned:
+        print_markdown(format_goals_markdown())
+        return
+
+    if cleaned.startswith("progress "):
+        parts = cleaned.split()
+        if len(parts) != 3:
+            print_error("Usage: /goal progress [id] [0-100]")
+            return
+        try:
+            entry = update_goal_progress(parts[1], int(parts[2]))
+        except Exception as exc:
+            print_error(f"Failed to update goal progress: {exc}")
+            transcript.record_status("Goal", f"Failed to update goal progress: {exc}")
+            return
+        print_context_snapshot(
+            f"Updated goal {entry.entry_id}: {entry.progress_percent}%",
+            title="Goals",
+            markdown=format_goals_markdown(),
+        )
+        transcript.record_status("Goal", f"Updated {entry.entry_id} to {entry.progress_percent}%")
+        return
+
+    if cleaned.startswith("done "):
+        parts = cleaned.split()
+        if len(parts) != 2:
+            print_error("Usage: /goal done [id]")
+            return
+        try:
+            entry = complete_goal(parts[1])
+        except Exception as exc:
+            print_error(f"Failed to complete goal: {exc}")
+            transcript.record_status("Goal", f"Failed to complete goal: {exc}")
+            return
+        print_context_snapshot(
+            f"Completed goal {entry.entry_id}.",
+            title="Goals",
+            markdown=format_goals_markdown(),
+        )
+        transcript.record_status("Goal", f"Completed {entry.entry_id}")
+        return
+
+    if cleaned.startswith("stop "):
+        parts = cleaned.split()
+        if len(parts) != 2:
+            print_error("Usage: /goal stop [id]")
+            return
+        try:
+            entry = stop_goal(parts[1])
+        except Exception as exc:
+            print_error(f"Failed to stop goal: {exc}")
+            transcript.record_status("Goal", f"Failed to stop goal: {exc}")
+            return
+        print_context_snapshot(
+            f"Stopped goal {entry.entry_id}.",
+            title="Goals",
+            markdown=format_goals_markdown(),
+        )
+        transcript.record_status("Goal", f"Stopped {entry.entry_id}")
+        return
+
+    try:
+        topic, description, ends_at, progress_percent = _parse_goal_add_arguments(cleaned)
+        entry = append_goal(topic, description=description, ends_at=ends_at, progress_percent=progress_percent)
+    except Exception as exc:
+        print_error(f"Failed to add goal: {exc}")
+        transcript.record_status("Goal", f"Failed to add goal: {exc}")
+        return
+    print_context_snapshot(
+        f"Added goal {entry.entry_id}: {entry.path}",
+        title="Goals",
+        markdown=format_goals_markdown(),
+    )
+    transcript.record_status("Goal", f"Added {entry.entry_id} to {entry.path}")
+
+
+def _parse_goal_add_arguments(raw: str) -> tuple[str, str, date | None, int]:
+    tokens = shlex.split(raw)
+    args = tokens[1:] if tokens and tokens[0] == "add" else tokens
+    topic_parts: list[str] = []
+    description = ""
+    ends_at: date | None = None
+    progress_percent = 0
+    index = 0
+    while index < len(args):
+        item = args[index]
+        if item == "--ends":
+            index += 1
+            if index >= len(args):
+                raise ValueError("missing value for --ends")
+            ends_at = date.fromisoformat(args[index])
+        elif item == "--progress":
+            index += 1
+            if index >= len(args):
+                raise ValueError("missing value for --progress")
+            progress_percent = int(args[index])
+        elif item in {"--desc", "--description"}:
+            index += 1
+            if index >= len(args):
+                raise ValueError("missing value for --desc")
+            description = args[index].strip()
+        else:
+            topic_parts.append(item)
+        index += 1
+    topic = " ".join(topic_parts).strip()
+    if not topic:
+        raise ValueError("goal topic cannot be empty")
+    if not description:
+        for separator in ("：", ":"):
+            if separator in topic:
+                left, right = topic.split(separator, 1)
+                left = left.strip()
+                right = right.strip()
+                if left and right:
+                    topic = left
+                    description = right
+                    break
+    return topic, description, ends_at, progress_percent
+
+
 @auth_app.command("login")
 def auth_login(target: str | None = typer.Argument(None, help="Profile name, or omit to use the active profile.")) -> None:
     manager = AuthManager()
@@ -634,9 +861,6 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         permission_prompt=_permission_prompt,
     )
     transcript = _build_transcript_writer(runtime)
-    restored_summary = _restore_latest_session(runtime)
-    if restored_summary:
-        _sync_transcript_writer(runtime, transcript)
     settings = runtime.current_settings()
     profile_name, profile = settings.resolve_profile(runtime.settings_overrides.get("active_profile"))
     print_welcome(
@@ -646,13 +870,14 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         model=runtime.current_model(),
         permission_mode=settings.permission.mode,
         tool_count=len(_list_tools_data()),
-        restored=restored_summary,
+        restored=None,
     )
     while True:
         try:
             line = await asyncio.to_thread(
                 prompt_input,
                 model_name=runtime.current_model(),
+                plan_topics=_active_goal_topics(),
             )
         except EOFError:
             console().print()
@@ -678,6 +903,9 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         if stripped == "/status":
             print_status_panel(_runtime_status_rows(runtime))
             continue
+        if stripped == "/restore":
+            _handle_restore_command(runtime, transcript)
+            continue
         if stripped.startswith("/user_profile"):
             instruction = stripped[len("/user_profile") :].strip()
             await _handle_user_profile_command(runtime, transcript, instruction)
@@ -685,6 +913,14 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         if stripped == "/exper" or stripped.startswith("/exper "):
             instruction = stripped[len("/exper") :].strip()
             await _handle_experience_command(runtime, transcript, instruction)
+            continue
+        if stripped == "/goal" or stripped.startswith("/goal "):
+            instruction = stripped[len("/goal") :].strip()
+            await _handle_goal_command(runtime, transcript, instruction)
+            continue
+        if stripped == "/plan" or stripped.startswith("/plan "):
+            instruction = stripped[len("/plan") :].strip()
+            await _handle_plan_command(runtime, transcript, instruction)
             continue
         if stripped == "/clear":
             runtime.engine.clear()

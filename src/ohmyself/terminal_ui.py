@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -7,6 +7,7 @@ import sys
 from typing import Iterable
 
 from rich import box
+from rich.align import Align
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -18,6 +19,8 @@ from rich.text import Text
 from prompt_toolkit.completion import Completer, Completion
 
 ACCENT = "#e58a61"
+WARM_BORDER = "#b8794f"
+WARM_TITLE = "#f0a36d"
 MUTED = "grey62"
 BORDER = "grey35"
 SUCCESS = "#7cb66d"
@@ -39,10 +42,16 @@ LOCAL_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "Show local commands"),
     ("/tools", "List enabled tools"),
     ("/status", "Show active profile, model, and permission mode"),
+    ("/restore", "Restore the latest saved conversation for this workspace"),
     ("/user_profile [prompt]", "Refresh user_profile.md from the current conversation"),
     ("/exper add [content]", "Add a life experience to the local experience library"),
     ("/exper [question]", "Answer by retrieving relevant local life experiences"),
     ("/exper organize", "Classify default experience entries into topic files"),
+    ("/goal [topic]", "Show goals, or add one with optional --desc and --ends"),
+    ("/goal progress [id] [0-100]", "Update goal progress"),
+    ("/goal done [id]", "Mark a goal completed"),
+    ("/goal stop [id]", "Stop a goal"),
+    ("/plan [content]", "Show today's organized plan, or add content and auto-organize it"),
     ("/clear", "Clear in-memory conversation history"),
     ("/continue", "Continue a paused tool loop"),
     ("/exit", "Exit Oh Myself"),
@@ -76,10 +85,10 @@ def prompt_text(*, model_name: str) -> Text:
     return prompt
 
 
-def prompt_input(*, model_name: str) -> str:
+def prompt_input(*, model_name: str, plan_topics: Iterable[str] | None = None) -> str:
     if _should_use_interactive_prompt():
         try:
-            return _prompt_toolkit_input(model_name=model_name)
+            return _prompt_toolkit_input(model_name=model_name, plan_topics=plan_topics)
         except Exception:
             pass
     return _CONSOLE.input(prompt_text(model_name=model_name))
@@ -107,6 +116,31 @@ def _print_notice(body: Text) -> None:
     _CONSOLE.print()
     _CONSOLE.print(body)
     _CONSOLE.print()
+
+
+def print_context_snapshot(message: str, *, title: str, markdown: str) -> None:
+    panel = _context_snapshot_panel(title=title, markdown=markdown)
+    print_status(message)
+    if _CONSOLE.size.width < 96:
+        _CONSOLE.print(Padding(panel, pad=(0, 0, 0, _MD_INDENT)))
+        _CONSOLE.print()
+        return
+
+    right_width = max(38, min(58, _CONSOLE.size.width // 2))
+    panel.width = right_width
+    _CONSOLE.print(Align.right(panel))
+    _CONSOLE.print()
+
+
+def _context_snapshot_panel(*, title: str, markdown: str) -> Panel:
+    return Panel(
+        Markdown(markdown or " "),
+        title=Text(title, style=f"bold {WARM_TITLE}"),
+        title_align="left",
+        border_style=WARM_BORDER,
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
 
 
 def format_assistant_chunk(text: str, *, line_start: bool, first_line: bool) -> tuple[str, bool, bool]:
@@ -201,7 +235,7 @@ def print_help_panel() -> None:
     table.add_column(style=f"bold {ACCENT}", no_wrap=True)
     table.add_column(style="default")
     for command, description in LOCAL_COMMANDS:
-        table.add_row(command, description)
+        table.add_row(Text(command, style=f"bold {ACCENT}"), description)
     _CONSOLE.print(
         Panel(
             table,
@@ -267,8 +301,12 @@ def print_welcome(
     _CONSOLE.print()
     for line in _logo_lines():
         _CONSOLE.print(line)
-    _CONSOLE.print(Text("  " + "─" * max(49, min(_CONSOLE.size.width - 4, 65)), style=LIGHT_BLUE))
+    _CONSOLE.print(Text(_welcome_divider(_CONSOLE.size.width), style=LIGHT_BLUE))
     _CONSOLE.print()
+
+
+def _welcome_divider(width: int) -> str:
+    return "  " + "-" * max(49, min(width - 4, 65))
 
 
 def _kv_row(label: str, value: str) -> Text:
@@ -338,27 +376,40 @@ def _should_use_interactive_prompt() -> bool:
     return bool(getattr(sys.stdin, "isatty", lambda: False)() and getattr(sys.stdout, "isatty", lambda: False)())
 
 
-def _prompt_toolkit_input(*, model_name: str) -> str:
+def _prompt_toolkit_input(*, model_name: str, plan_topics: Iterable[str] | None = None) -> str:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.formatted_text import ANSI
 
     prompt = ANSI(_ansi_prompt(model_name=model_name))
     session = PromptSession(
-        completer=_SlashCommandCompleter(LOCAL_COMMANDS),
+        completer=_SlashCommandCompleter(LOCAL_COMMANDS, plan_topics=plan_topics),
         complete_while_typing=True,
     )
     return session.prompt(prompt)
 
 
 class _SlashCommandCompleter(Completer):
-    def __init__(self, commands: Iterable[tuple[str, str]]) -> None:
+    def __init__(self, commands: Iterable[tuple[str, str]], *, plan_topics: Iterable[str] | None = None) -> None:
         self._commands = tuple(commands)
+        self._plan_topics = tuple(dict.fromkeys(topic.strip() for topic in (plan_topics or ()) if topic and topic.strip()))
 
     def get_completions(self, document: "Document", complete_event: "CompleteEvent"):
         del complete_event
         text = document.text_before_cursor
         if not text.startswith("/"):
             return
+        if text.startswith("/plan "):
+            replacement_start = -len(text)
+            for topic in self._plan_topics:
+                candidate = f"/plan {topic}\uFF1A"
+                candidate = f"/plan {topic}\uFF1A"
+                if candidate.startswith(text):
+                    yield Completion(
+                        candidate,
+                        start_position=replacement_start,
+                        display=candidate,
+                        display_meta="Active goal topic",
+                    )
         replacement_start = -len(text)
         for command, description in self._commands:
             insert_text = command.split(" [", 1)[0]
