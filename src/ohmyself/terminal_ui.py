@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import sys
+from typing import Iterable
 
 from rich import box
 from rich.console import Console
@@ -13,6 +15,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 from rich.text import Text
+from prompt_toolkit.completion import Completer, Completion
 
 ACCENT = "#e58a61"
 MUTED = "grey62"
@@ -31,6 +34,19 @@ _CONSOLE = Console(highlight=True, soft_wrap=True)
 EVENT_INDENT = "      "
 ASSISTANT_INDENT = "    "
 EVENT_PREFIX = "| "
+LOCAL_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("/", "Show this command list"),
+    ("/help", "Show local commands"),
+    ("/tools", "List enabled tools"),
+    ("/status", "Show active profile, model, and permission mode"),
+    ("/user_profile [prompt]", "Refresh user_profile.md from the current conversation"),
+    ("/exper add [content]", "Add a life experience to the local experience library"),
+    ("/exper [question]", "Answer by retrieving relevant local life experiences"),
+    ("/exper organize", "Classify default experience entries into topic files"),
+    ("/clear", "Clear in-memory conversation history"),
+    ("/continue", "Continue a paused tool loop"),
+    ("/exit", "Exit Oh Myself"),
+)
 
 
 @dataclass(frozen=True)
@@ -60,22 +76,37 @@ def prompt_text(*, model_name: str) -> Text:
     return prompt
 
 
+def prompt_input(*, model_name: str) -> str:
+    if _should_use_interactive_prompt():
+        try:
+            return _prompt_toolkit_input(model_name=model_name)
+        except Exception:
+            pass
+    return _CONSOLE.input(prompt_text(model_name=model_name))
+
+
 def print_status(message: str) -> None:
     label = Text("status", style=f"bold {ACCENT}")
     body = Text.assemble(EVENT_INDENT, "[", label, ("] ", MUTED), message)
-    _CONSOLE.print(body)
+    _print_notice(body)
 
 
 def print_error(message: str) -> None:
     label = Text("error", style=f"bold {ERROR}")
     body = Text.assemble(EVENT_INDENT, "[", label, ("] ", MUTED), message)
-    _CONSOLE.print(body)
+    _print_notice(body)
 
 
 def print_success(message: str) -> None:
     label = Text("done", style=f"bold {SUCCESS}")
     body = Text.assemble(EVENT_INDENT, "[", label, ("] ", MUTED), message)
+    _print_notice(body)
+
+
+def _print_notice(body: Text) -> None:
+    _CONSOLE.print()
     _CONSOLE.print(body)
+    _CONSOLE.print()
 
 
 def format_assistant_chunk(text: str, *, line_start: bool, first_line: bool) -> tuple[str, bool, bool]:
@@ -169,13 +200,8 @@ def print_help_panel() -> None:
     table = Table(box=None, show_header=False, expand=True, padding=(0, 1))
     table.add_column(style=f"bold {ACCENT}", no_wrap=True)
     table.add_column(style="default")
-    table.add_row("/help", "Show local commands")
-    table.add_row("/tools", "List enabled tools")
-    table.add_row("/status", "Show active profile, model, and permission mode")
-    table.add_row("/user_profile [prompt]", "Refresh user_profile.md from the current conversation")
-    table.add_row("/clear", "Clear in-memory conversation history")
-    table.add_row("/continue", "Continue a paused tool loop")
-    table.add_row("/exit", "Exit Oh Myself")
+    for command, description in LOCAL_COMMANDS:
+        table.add_row(command, description)
     _CONSOLE.print(
         Panel(
             table,
@@ -306,6 +332,47 @@ def make_live_markdown(text: str) -> Live:
 def update_live_markdown(live: Live, text: str) -> None:
     """Update a running Live block with new Markdown text."""
     live.update(_padded_md(text))
+
+
+def _should_use_interactive_prompt() -> bool:
+    return bool(getattr(sys.stdin, "isatty", lambda: False)() and getattr(sys.stdout, "isatty", lambda: False)())
+
+
+def _prompt_toolkit_input(*, model_name: str) -> str:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import ANSI
+
+    prompt = ANSI(_ansi_prompt(model_name=model_name))
+    session = PromptSession(
+        completer=_SlashCommandCompleter(LOCAL_COMMANDS),
+        complete_while_typing=True,
+    )
+    return session.prompt(prompt)
+
+
+class _SlashCommandCompleter(Completer):
+    def __init__(self, commands: Iterable[tuple[str, str]]) -> None:
+        self._commands = tuple(commands)
+
+    def get_completions(self, document: "Document", complete_event: "CompleteEvent"):
+        del complete_event
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+        replacement_start = -len(text)
+        for command, description in self._commands:
+            insert_text = command.split(" [", 1)[0]
+            if insert_text.startswith(text) or command.startswith(text):
+                yield Completion(
+                    insert_text,
+                    start_position=replacement_start,
+                    display=command,
+                    display_meta=description,
+                )
+
+
+def _ansi_prompt(*, model_name: str) -> str:
+    return f"  \x1b[1;38;2;229;138;97mohmy\x1b[0m\x1b[38;5;247m[\x1b[0m\x1b[38;5;244m{_short_model_name(model_name)}\x1b[0m\x1b[38;5;247m] > \x1b[0m"
 
 
 def _logo_lines() -> list[Text]:

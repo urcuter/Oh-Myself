@@ -49,6 +49,14 @@ class QueryEngine:
         return self._api_client
 
     @property
+    def permission_checker(self) -> PermissionChecker:
+        return self._permission_checker
+
+    @property
+    def permission_prompt(self) -> PermissionPrompt | None:
+        return self._permission_prompt
+
+    @property
     def total_usage(self):
         return self._cost_tracker.total
 

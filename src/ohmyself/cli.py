@@ -24,7 +24,13 @@ from ohmyself.permissions import PermissionMode
 from ohmyself.runtime import OhMyRuntime, build_runtime
 from ohmyself.services import (
     SessionTranscriptWriter,
+    append_experience,
+    build_experience_answer_prompt,
+    build_experience_organize_prompt,
+    build_experience_retrieval_task,
     generate_user_profile,
+    get_experience_dir,
+    has_experience_content,
     load_latest_session_snapshot,
     save_session_snapshot,
     save_user_profile,
@@ -43,12 +49,14 @@ from ohmyself.terminal_ui import (
     print_tool_started,
     print_welcome,
     print_tools_panel,
-    prompt_text,
+    prompt_input,
     print_markdown,
     print_subagent_completed,
     print_subagent_started,
 )
 from ohmyself.tools import create_tool_registry
+from ohmyself.tools.base import ToolExecutionContext, ToolRegistry
+from ohmyself.tools.subagent_tool import DelegateTaskTool, DelegateTaskToolInput
 
 app = typer.Typer(name="ohmy", help="Oh Myself: a standalone terminal AI agent.", add_completion=False)
 auth_app = typer.Typer(name="auth", help="Manage API keys for Oh Myself.")
@@ -410,6 +418,95 @@ async def _handle_user_profile_command(runtime: OhMyRuntime, transcript: Session
     transcript.record_status("User Profile", f"Updated user profile: {path}")
 
 
+async def _retrieve_experience_matches(runtime: OhMyRuntime, transcript: SessionTranscriptWriter, question: str) -> str | None:
+    runtime.refresh_system_prompt(question)
+    registry = runtime.engine.tool_metadata.get("tool_registry")
+    if not isinstance(registry, ToolRegistry):
+        print_error("Experience retrieval is unavailable: tool registry is missing.")
+        return None
+    tool = registry.get("delegate_task")
+    if not isinstance(tool, DelegateTaskTool):
+        print_error("Experience retrieval is unavailable: delegate_task tool is missing.")
+        return None
+
+    task = build_experience_retrieval_task(question)
+    arguments = DelegateTaskToolInput(
+        task=task,
+        role="experience_retriever",
+        allowed_tools=["glob", "read_file", "grep"],
+        read_only=True,
+        max_turns=6,
+        timeout_seconds=90.0,
+    )
+    print_subagent_started(arguments.role, arguments.task, read_only=arguments.read_only)
+    transcript.record_status("Subagent", f"started role={arguments.role} read_only={arguments.read_only} task={arguments.task}")
+    result = await tool.execute(
+        arguments,
+        ToolExecutionContext(
+            cwd=Path(runtime.cwd),
+            metadata={
+                "api_client": runtime.engine.api_client,
+                "tool_registry": registry,
+                "permission_checker": runtime.engine.permission_checker,
+                "model": runtime.engine.model,
+                "system_prompt": runtime.engine.system_prompt,
+                "max_tokens": runtime.engine.max_tokens,
+                "permission_prompt": runtime.engine.permission_prompt,
+                **runtime.engine.tool_metadata,
+            },
+        ),
+    )
+    subagent = result.metadata.get("subagent")
+    if isinstance(subagent, dict):
+        session_id = str(subagent.get("session_id") or "")
+        summary = str(subagent.get("summary") or result.output).strip()
+        timed_out = bool(subagent.get("timed_out", False))
+    else:
+        session_id = ""
+        summary = result.output.strip()
+        timed_out = False
+    print_subagent_completed(arguments.role, summary, session_id=session_id, is_error=result.is_error, timed_out=timed_out)
+    transcript.record_status(
+        "Subagent",
+        f"completed role={arguments.role} session={session_id or '(unknown)'} error={result.is_error} timeout={timed_out}",
+    )
+    if result.is_error:
+        print_error(summary.splitlines()[0] if summary else "Experience retrieval failed.")
+        return None
+    return result.output
+
+
+async def _handle_experience_command(runtime: OhMyRuntime, transcript: SessionTranscriptWriter, instruction: str) -> None:
+    cleaned = instruction.strip()
+    if not cleaned:
+        print_status("Usage: /exper add [content] | /exper [question] | /exper organize")
+        return
+    if cleaned == "add" or cleaned.startswith("add "):
+        content = cleaned[len("add ") :].strip()
+        if not content:
+            print_error("Usage: /exper add [content]")
+            return
+        try:
+            entry = append_experience(content)
+        except Exception as exc:
+            print_error(f"Failed to add experience: {exc}")
+            transcript.record_status("Experience", f"Failed to add experience: {exc}")
+            return
+        print_status(f"Added experience {entry.entry_id}: {entry.path}")
+        transcript.record_status("Experience", f"Added {entry.entry_id} to {entry.path}")
+        return
+    if cleaned == "organize":
+        await _stream_prompt(runtime, build_experience_organize_prompt(), transcript)
+        return
+    if not has_experience_content():
+        print_error(f"No experience entries found. Add one with /exper add [content]. Directory: {get_experience_dir()}")
+        return
+    retrieval_report = await _retrieve_experience_matches(runtime, transcript, cleaned)
+    if retrieval_report is None:
+        return
+    await _stream_prompt(runtime, build_experience_answer_prompt(cleaned, retrieval_report), transcript)
+
+
 @auth_app.command("login")
 def auth_login(target: str | None = typer.Argument(None, help="Profile name, or omit to use the active profile.")) -> None:
     manager = AuthManager()
@@ -554,8 +651,8 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
     while True:
         try:
             line = await asyncio.to_thread(
-                console().input,
-                prompt_text(model_name=runtime.current_model()),
+                prompt_input,
+                model_name=runtime.current_model(),
             )
         except EOFError:
             console().print()
@@ -566,6 +663,9 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
             continue
         stripped = line.strip()
         if not stripped:
+            continue
+        if stripped == "/":
+            print_help_panel()
             continue
         if stripped == "/exit":
             break
@@ -582,6 +682,10 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
             instruction = stripped[len("/user_profile") :].strip()
             await _handle_user_profile_command(runtime, transcript, instruction)
             continue
+        if stripped == "/exper" or stripped.startswith("/exper "):
+            instruction = stripped[len("/exper") :].strip()
+            await _handle_experience_command(runtime, transcript, instruction)
+            continue
         if stripped == "/clear":
             runtime.engine.clear()
             runtime.start_new_session()
@@ -594,6 +698,10 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
             continue
         if stripped == "/continue":
             await _continue_pending(runtime, transcript)
+            continue
+        if stripped.startswith("/"):
+            print_error(f"Unknown local command: {stripped}. Use / or /help to list commands.")
+            print_help_panel()
             continue
         await _stream_prompt(runtime, stripped, transcript)
 
