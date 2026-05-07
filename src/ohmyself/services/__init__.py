@@ -54,6 +54,12 @@ from ohmyself.services.goal_memory import (
     update_goal_memory_via_ai,
 )
 from ohmyself.services.goal_memory_retriever import build_goal_memory_retrieval_task
+from ohmyself.services.goal_progress import (
+    assess_daily_goal_progress,
+    get_daily_marker_path,
+    get_last_progress_check_date,
+    set_last_progress_check_date,
+)
 from ohmyself.services.goal_session import (
     list_goal_sessions,
     link_session_to_goal,
@@ -67,6 +73,10 @@ __all__ = [
     "GoalLimitError",
     "GoalNotFoundError",
     "MAX_ACTIVE_GOALS",
+    "assess_daily_goal_progress",
+    "get_daily_marker_path",
+    "get_last_progress_check_date",
+    "set_last_progress_check_date",
     "SessionTranscriptWriter",
     "USER_PREFS_FILENAME",
     "append_experience",

@@ -31,6 +31,7 @@ class GoalProgressRecord:
     status: str
     recorded_at: datetime
     event: str
+    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -148,7 +149,7 @@ def has_goal_content() -> bool:
     return bool(list_goals())
 
 
-def update_goal_progress(entry_id: str, progress_percent: int, *, now: datetime | None = None) -> GoalEntry:
+def update_goal_progress(entry_id: str, progress_percent: int, *, note: str = "", now: datetime | None = None) -> GoalEntry:
     if not 0 <= progress_percent <= 100:
         raise GoalError("goal progress must be between 0 and 100")
     timestamp = now or datetime.now().astimezone()
@@ -162,7 +163,7 @@ def update_goal_progress(entry_id: str, progress_percent: int, *, now: datetime 
             status=status,
             updated_at=timestamp,
             closed_at=closed_at,
-            progress_history=_append_progress_record(goal, progress_percent, status, timestamp, "progress"),
+            progress_history=_append_progress_record(goal, progress_percent, status, timestamp, "progress", note=note),
         )
 
     return _update_goal(entry_id, update)
@@ -323,6 +324,7 @@ def _append_progress_record(
     status: str,
     recorded_at: datetime,
     event: str,
+    note: str = "",
 ) -> tuple[GoalProgressRecord, ...]:
     return (
         *goal.progress_history,
@@ -331,17 +333,21 @@ def _append_progress_record(
             status=status,
             recorded_at=recorded_at,
             event=event,
+            note=note,
         ),
     )
 
 
 def _progress_record_to_payload(record: GoalProgressRecord) -> dict[str, Any]:
-    return {
+    payload = {
         "progress_percent": record.progress_percent,
         "status": record.status,
         "recorded_at": record.recorded_at.isoformat(timespec="seconds"),
         "event": record.event,
     }
+    if record.note:
+        payload["note"] = record.note
+    return payload
 
 
 def _normalize_progress_history(
@@ -374,6 +380,7 @@ def _normalize_progress_history(
                     status=record_status,
                     recorded_at=datetime.fromisoformat(str(item["recorded_at"])),
                     event=str(item.get("event") or "progress"),
+                    note=str(item.get("note") or ""),
                 )
             )
         except (KeyError, TypeError, ValueError):

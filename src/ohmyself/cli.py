@@ -61,6 +61,11 @@ from ohmyself.services.goal_memory import (
     CONTEXT_FILENAME,
 )
 from ohmyself.services.goal_memory_retriever import build_goal_memory_retrieval_task
+from ohmyself.services.goal_progress import (
+    assess_daily_goal_progress,
+    get_last_progress_check_date,
+    set_last_progress_check_date,
+)
 from ohmyself.services.goal_session import list_goal_sessions
 from ohmyself.terminal_ui import (
     GOAL_CYCLE_SENTINEL,
@@ -1164,6 +1169,72 @@ def status_command() -> None:
     )
 
 
+async def _maybe_daily_progress_update(runtime: OhMyRuntime) -> None:
+    from datetime import date, timedelta
+
+    from ohmyself.services.plan import get_plan_path
+
+    today = date.today()
+    last_check = get_last_progress_check_date()
+    if last_check is not None and last_check >= today:
+        return
+
+    yesterday = today - timedelta(days=1)
+    plan_path = get_plan_path(yesterday)
+    if not plan_path.exists():
+        set_last_progress_check_date(today)
+        return
+    plan_content = plan_path.read_text(encoding="utf-8", errors="replace")
+    if not plan_content.strip():
+        set_last_progress_check_date(today)
+        return
+
+    active_goals = [g for g in list_goals() if g.status == "active"]
+    if not active_goals:
+        set_last_progress_check_date(today)
+        return
+
+    print_status("Assessing goal progress from yesterday's plan...")
+    try:
+        updates = await assess_daily_goal_progress(
+            api_client=runtime.engine.api_client,
+            model=runtime.engine.model,
+            max_tokens=runtime.engine.max_tokens,
+            yesterday=yesterday,
+            plan_content=plan_content,
+            active_goals=active_goals,
+        )
+    except Exception:
+        set_last_progress_check_date(today)
+        return
+
+    if not updates:
+        set_last_progress_check_date(today)
+        return
+
+    for item in updates:
+        goal_id = str(item.get("goal_id", ""))
+        new_progress = int(item.get("new_progress", -1))
+        note = str(item.get("note", ""))
+        if not goal_id or new_progress < 0 or new_progress > 100:
+            continue
+        try:
+            update_goal_progress(goal_id, new_progress, note=note)
+        except Exception:
+            continue
+
+    goal_names = []
+    for item in updates:
+        gid = str(item.get("goal_id", ""))
+        for g in active_goals:
+            if g.entry_id == gid:
+                goal_names.append(f"{g.topic} → {item.get('new_progress')}%")
+                break
+    if goal_names:
+        print_status(f"Daily progress updated: {', '.join(goal_names)}")
+    set_last_progress_check_date(today)
+
+
 async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_url: str | None, system_prompt: str | None, api_key: str | None, api_format: str | None, permission_mode: str | None, active_profile: str | None) -> None:
     runtime = await build_runtime(
         cwd=cwd,
@@ -1180,6 +1251,8 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
     goal_context = GoalAgentContext()
     goal_context.refresh_goals()
     runtime.goal_context = goal_context
+
+    await _maybe_daily_progress_update(runtime)
 
     transcript = _build_transcript_writer(runtime)
     settings = runtime.current_settings()
@@ -1224,6 +1297,8 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
             print_help_panel()
             continue
         if stripped == "/exit":
+            if runtime.goal_context is not None and runtime.goal_context.active_goal_id is not None:
+                await _maybe_prompt_memory_update_on_leave(runtime, transcript)
             break
         if stripped == "/help":
             print_help_panel()
