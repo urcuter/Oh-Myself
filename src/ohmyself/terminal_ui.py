@@ -48,6 +48,12 @@ LOCAL_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/exper [question]", "Answer by retrieving relevant local life experiences"),
     ("/exper organize", "Classify default experience entries into topic files"),
     ("/goal [topic]", "Show goals, or add one with optional --desc and --ends"),
+    ("/goal switch [id]", "Switch to a goal's agent context"),
+    ("/goal exit", "Exit goal mode back to general agent"),
+    ("/goal memory", "View current goal's memory files"),
+    ("/goal memory update", "AI analyzes conversation and updates goal memory"),
+    ("/goal memory search [query]", "Search goal memory and experiences (--deep for sessions)"),
+    ("/goal sessions", "View sessions linked to current goal"),
     ("/goal progress [id] [0-100]", "Update goal progress"),
     ("/goal done [id]", "Mark a goal completed"),
     ("/goal stop [id]", "Stop a goal"),
@@ -56,6 +62,7 @@ LOCAL_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/continue", "Continue a paused tool loop"),
     ("/exit", "Exit Oh Myself"),
 )
+GOAL_CYCLE_SENTINEL = "\x00GC\x00"
 
 
 @dataclass(frozen=True)
@@ -74,10 +81,14 @@ def print_markdown(text: str) -> None:
     _CONSOLE.print(_padded_md(text))
 
 
-def prompt_text(*, model_name: str) -> Text:
+def prompt_text(*, model_name: str, goal_topic: str = "") -> Text:
     prompt = Text()
     prompt.append("  ")
     prompt.append("ohmy", style=f"bold {ACCENT}")
+    if goal_topic:
+        prompt.append(" [", style=MUTED)
+        prompt.append(goal_topic[:15], style=ACCENT)
+        prompt.append("]", style=MUTED)
     prompt.append("[", style=MUTED)
     prompt.append(_short_model_name(model_name), style=MODEL_MUTED)
     prompt.append("]", style=MUTED)
@@ -85,13 +96,13 @@ def prompt_text(*, model_name: str) -> Text:
     return prompt
 
 
-def prompt_input(*, model_name: str, plan_topics: Iterable[str] | None = None) -> str:
+def prompt_input(*, model_name: str, plan_topics: Iterable[str] | None = None, goal_context=None, goal_topic: str = "") -> str:
     if _should_use_interactive_prompt():
         try:
-            return _prompt_toolkit_input(model_name=model_name, plan_topics=plan_topics)
+            return _prompt_toolkit_input(model_name=model_name, plan_topics=plan_topics, goal_context=goal_context, goal_topic=goal_topic)
         except Exception:
             pass
-    return _CONSOLE.input(prompt_text(model_name=model_name))
+    return _CONSOLE.input(prompt_text(model_name=model_name, goal_topic=goal_topic))
 
 
 def print_status(message: str) -> None:
@@ -229,6 +240,33 @@ def print_subagent_completed(role: str, summary: str, *, session_id: str, is_err
     if summary:
         _CONSOLE.print(Text.assemble(EVENT_INDENT, EVENT_PREFIX, ("  summary ", MUTED), (_truncate(summary, 160), MUTED)))
 
+
+def print_goal_switch_feedback(topic: str | None) -> None:
+    _CONSOLE.print()
+    if topic:
+        label = Text("goal", style=f"bold {ACCENT}")
+        body = Text.assemble(
+            EVENT_INDENT, "[", label, ("] ", MUTED),
+            "已切换到目标: ", (topic, f"bold {ACCENT}"),
+        )
+    else:
+        label = Text("goal", style=f"bold {ACCENT}")
+        body = Text.assemble(
+            EVENT_INDENT, "[", label, ("] ", MUTED),
+            "已退出目标模式",
+        )
+    _CONSOLE.print(body)
+    _CONSOLE.print()
+
+
+def prompt_goal_memory_update() -> bool:
+    """Ask user whether to update goal memory before leaving."""
+    _CONSOLE.print()
+    return Confirm.ask(
+        f"{EVENT_INDENT}当前对话有新的内容，是否更新目标记忆？",
+        console=_CONSOLE,
+        default=True,
+    )
 
 def print_help_panel() -> None:
     table = Table(box=None, show_header=False, expand=True, padding=(0, 1))
@@ -376,32 +414,81 @@ def _should_use_interactive_prompt() -> bool:
     return bool(getattr(sys.stdin, "isatty", lambda: False)() and getattr(sys.stdout, "isatty", lambda: False)())
 
 
-def _prompt_toolkit_input(*, model_name: str, plan_topics: Iterable[str] | None = None) -> str:
+def _prompt_toolkit_input(*, model_name: str, plan_topics: Iterable[str] | None = None, goal_context=None, goal_topic: str = "") -> str:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.formatted_text import ANSI
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.filters import Condition
+    from prompt_toolkit.application import get_app
 
-    prompt = ANSI(_ansi_prompt(model_name=model_name))
+    prompt = ANSI(_ansi_prompt(model_name=model_name, goal_topic=goal_topic))
+
+    kb: KeyBindings | None = None
+    if goal_context is not None:
+
+        @Condition
+        def buffer_empty() -> bool:
+            try:
+                app = get_app()
+                return not app.current_buffer.text.strip()
+            except Exception:
+                return False
+
+        kb = KeyBindings()
+
+        @kb.add("tab", filter=buffer_empty)
+        def _(event: object) -> None:
+            del event
+            goal_context.cycle_next()
+            get_app().exit(result=GOAL_CYCLE_SENTINEL)
+
+    goal_ids: list[str] = []
+    if goal_context is not None:
+        goal_context.refresh_goals()
+        goal_ids = [g.entry_id for g in goal_context.available_goals]
+
     session = PromptSession(
-        completer=_SlashCommandCompleter(LOCAL_COMMANDS, plan_topics=plan_topics),
+        completer=_SlashCommandCompleter(LOCAL_COMMANDS, plan_topics=plan_topics, goal_ids=goal_ids),
         complete_while_typing=True,
+        key_bindings=kb,
     )
     return session.prompt(prompt)
 
 
 class _SlashCommandCompleter(Completer):
-    def __init__(self, commands: Iterable[tuple[str, str]], *, plan_topics: Iterable[str] | None = None) -> None:
+    def __init__(
+        self,
+        commands: Iterable[tuple[str, str]],
+        *,
+        plan_topics: Iterable[str] | None = None,
+        goal_ids: Iterable[str] | None = None,
+    ) -> None:
         self._commands = tuple(commands)
         self._plan_topics = tuple(dict.fromkeys(topic.strip() for topic in (plan_topics or ()) if topic and topic.strip()))
+        self._goal_ids = tuple(dict.fromkeys(gid.strip() for gid in (goal_ids or ()) if gid and gid.strip()))
 
     def get_completions(self, document: "Document", complete_event: "CompleteEvent"):
         del complete_event
         text = document.text_before_cursor
         if not text.startswith("/"):
             return
+
+        replacement_start = -len(text)
+
+        if text.startswith("/goal switch "):
+            prefix = text[len("/goal switch "):]
+            for gid in self._goal_ids:
+                candidate = f"/goal switch {gid}"
+                if candidate.startswith(text):
+                    yield Completion(
+                        candidate,
+                        start_position=replacement_start,
+                        display=candidate,
+                        display_meta="Switch to this goal",
+                    )
+
         if text.startswith("/plan "):
-            replacement_start = -len(text)
             for topic in self._plan_topics:
-                candidate = f"/plan {topic}\uFF1A"
                 candidate = f"/plan {topic}\uFF1A"
                 if candidate.startswith(text):
                     yield Completion(
@@ -410,7 +497,7 @@ class _SlashCommandCompleter(Completer):
                         display=candidate,
                         display_meta="Active goal topic",
                     )
-        replacement_start = -len(text)
+
         for command, description in self._commands:
             insert_text = command.split(" [", 1)[0]
             if insert_text.startswith(text) or command.startswith(text):
@@ -422,8 +509,12 @@ class _SlashCommandCompleter(Completer):
                 )
 
 
-def _ansi_prompt(*, model_name: str) -> str:
-    return f"  \x1b[1;38;2;229;138;97mohmy\x1b[0m\x1b[38;5;247m[\x1b[0m\x1b[38;5;244m{_short_model_name(model_name)}\x1b[0m\x1b[38;5;247m] > \x1b[0m"
+def _ansi_prompt(*, model_name: str, goal_topic: str = "") -> str:
+    if goal_topic:
+        topic_part = f"\x1b[38;5;247m[\x1b[0m\x1b[1;38;2;229;138;97m{goal_topic[:15]}\x1b[0m\x1b[38;5;247m]\x1b[0m"
+    else:
+        topic_part = ""
+    return f"  \x1b[1;38;2;229;138;97mohmy\x1b[0m{topic_part}\x1b[38;5;247m[\x1b[0m\x1b[38;5;244m{_short_model_name(model_name)}\x1b[0m\x1b[38;5;247m] > \x1b[0m"
 
 
 def _logo_lines() -> list[Text]:

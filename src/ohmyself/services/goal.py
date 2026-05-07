@@ -58,6 +58,26 @@ def get_goal_path() -> Path:
     return get_goal_dir() / "goals.json"
 
 
+def ensure_goal_dir(goal_id: str) -> Path:
+    base = get_goal_dir() / goal_id
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "memory").mkdir(parents=True, exist_ok=True)
+    (base / "experiences").mkdir(parents=True, exist_ok=True)
+    (base / "sessions").mkdir(parents=True, exist_ok=True)
+    for filename in ("ai_notes.md", "user_prefs.md", "context.md"):
+        file_path = base / "memory" / filename
+        if not file_path.exists():
+            file_path.write_text("", encoding="utf-8")
+    exp_path = base / "experiences" / "default.md"
+    if not exp_path.exists():
+        exp_path.write_text(
+            f"# {goal_id} Experience Library\n\n"
+            "New experience entries for this goal are appended here first.\n",
+            encoding="utf-8",
+        )
+    return base
+
+
 def append_goal(
     topic: str,
     *,
@@ -82,8 +102,9 @@ def append_goal(
     normalized_ends_at = _normalize_date(ends_at)
     status = "completed" if progress_percent == 100 else "active"
     closed_at = created_at if status == "completed" else None
+    entry_id = f"GOAL-{created_at.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
     entry = GoalEntry(
-        entry_id=f"GOAL-{created_at.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}",
+        entry_id=entry_id,
         path=get_goal_path(),
         topic=cleaned_topic,
         description=cleaned_description,
@@ -102,6 +123,7 @@ def append_goal(
         ),
         closed_at=closed_at,
     )
+    ensure_goal_dir(entry_id)
     goals.append(entry)
     _write_goals(goals)
     return entry

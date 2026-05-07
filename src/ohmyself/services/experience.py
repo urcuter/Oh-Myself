@@ -39,13 +39,19 @@ def ensure_experience_library() -> Path:
     return path
 
 
-def append_experience(content: str, *, now: datetime | None = None) -> ExperienceEntry:
+def append_experience(
+    content: str, *, now: datetime | None = None, goal_id: str | None = None
+) -> ExperienceEntry:
     cleaned = content.strip()
     if not cleaned:
         raise ValueError("experience content cannot be empty")
     created_at = now or datetime.now().astimezone()
     entry_id = f"EXP-{created_at.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
-    path = ensure_experience_library()
+    if goal_id:
+        from ohmyself.services.goal_memory import ensure_goal_experience_library
+        path = ensure_goal_experience_library(goal_id)
+    else:
+        path = ensure_experience_library()
     block = "\n\n".join(
         [
             f"## {entry_id}",
@@ -73,22 +79,28 @@ def has_experience_content() -> bool:
     return False
 
 
-def build_experience_retrieval_task(question: str) -> str:
+def build_experience_retrieval_task(question: str, *, goal_id: str | None = None) -> str:
     cleaned = question.strip()
     if not cleaned:
         raise ValueError("experience question cannot be empty")
     experience_dir = get_experience_dir()
+    dirs_to_search = [str(experience_dir)]
+    if goal_id:
+        from ohmyself.services.goal_memory import get_goal_experience_dir
+        goal_exp_dir = str(get_goal_experience_dir(goal_id))
+        dirs_to_search = [goal_exp_dir, str(experience_dir)]
+    dirs_text = "\n".join(f"  - {d}" for d in dirs_to_search)
     return f"""\
 你是 experience_retriever，只负责检索本地生活经验库，不负责给用户最终建议。
 
 用户问题：
 {cleaned}
 
-经验库目录：
-{experience_dir}
+经验库目录（按优先级排序，优先搜索前面的目录，未找到再扩展）：
+{dirs_text}
 
 请执行：
-1. 使用 glob/read_file/grep 阅读 `{experience_dir}` 下的 markdown 经验库。
+1. 按优先级顺序使用 glob/read_file/grep 阅读上述目录下的 markdown 经验库。
 2. 找出和用户问题相关的经验片段。
 3. 返回来源文件、经验 ID 或标题、相关原文摘录、相关原因、相关度。
 4. 如果没有相关经验，明确说没有找到足够依据。

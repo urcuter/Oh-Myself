@@ -78,7 +78,7 @@ def _snapshot_tool_metadata(tool_metadata: dict[str, object] | None) -> dict[str
     if not isinstance(tool_metadata, dict):
         return {}
     payload: dict[str, Any] = {}
-    for key in ("active_profile", "active_artifacts", "last_goal", "subagent_runs", "agent_depth", "agent_lineage"):
+    for key in ("active_profile", "active_artifacts", "last_goal", "subagent_runs", "agent_depth", "agent_lineage", "active_goal_id"):
         if key in tool_metadata:
             payload[key] = _to_jsonable(tool_metadata[key])
     return payload

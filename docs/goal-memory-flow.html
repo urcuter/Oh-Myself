@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Oh-Myself Goal 记忆系统流程图</title>
+<style>
+:root {
+  --bg: #1a1b26;
+  --card: #24283b;
+  --border: #414868;
+  --text: #c0caf5;
+  --muted: #565f89;
+  --accent: #e58a61;
+  --blue: #7aa2f7;
+  --green: #9ece6a;
+  --red: #f7768e;
+  --yellow: #e0af68;
+  --purple: #bb9af7;
+  --cyan: #7dcfff;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  line-height: 1.6;
+  padding: 20px;
+}
+.container { max-width: 1400px; margin: 0 auto; }
+h1 {
+  color: var(--accent);
+  font-size: 2em;
+  text-align: center;
+  margin-bottom: 10px;
+}
+.subtitle {
+  text-align: center;
+  color: var(--muted);
+  margin-bottom: 40px;
+}
+h2 {
+  color: var(--blue);
+  font-size: 1.4em;
+  margin: 40px 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+h3 {
+  color: var(--cyan);
+  font-size: 1.1em;
+  margin: 24px 0 12px;
+}
+.flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  justify-content: center;
+  align-items: flex-start;
+  margin: 24px 0;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  min-width: 280px;
+  flex: 1;
+  max-width: 420px;
+}
+.card h4 {
+  font-size: 1em;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card h4 .icon {
+  font-size: 1.2em;
+}
+.card-trigger { border-top: 3px solid var(--yellow); }
+.card-trigger h4 { color: var(--yellow); }
+.card-process { border-top: 3px solid var(--blue); }
+.card-process h4 { color: var(--blue); }
+.card-output { border-top: 3px solid var(--green); }
+.card-output h4 { color: var(--green); }
+.card-human { border-top: 3px solid var(--purple); }
+.card-human h4 { color: var(--purple); }
+.card-storage { border-top: 3px solid var(--cyan); }
+.card-storage h4 { color: var(--cyan); }
+
+.arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 2em;
+  min-width: 40px;
+}
+.step { margin: 6px 0; padding: 4px 0; color: var(--text); font-size: 0.92em; }
+.step .cmd { color: var(--accent); font-family: 'Cascadia Code', 'Consolas', monospace; }
+.step .path { color: var(--muted); font-size: 0.85em; font-family: 'Cascadia Code', 'Consolas', monospace; }
+.step .note { color: var(--muted); font-size: 0.82em; }
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75em;
+  font-weight: bold;
+  margin-left: 6px;
+}
+.badge-human { background: var(--purple); color: var(--bg); }
+.badge-ai { background: var(--blue); color: var(--bg); }
+.badge-system { background: var(--green); color: var(--bg); }
+
+.files {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+}
+.files table { width: 100%; border-collapse: collapse; }
+.files th {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--blue);
+  font-size: 0.9em;
+}
+.files td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88em;
+}
+.files tr:last-child td { border-bottom: none; }
+.files .mono { font-family: 'Cascadia Code', 'Consolas', monospace; color: var(--cyan); }
+.files .who { font-size: 0.8em; }
+
+.section-desc {
+  color: var(--muted);
+  font-size: 0.92em;
+  margin-bottom: 16px;
+}
+
+code {
+  background: rgba(255,255,255,0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.88em;
+}
+.divider {
+  border: none;
+  border-top: 1px dashed var(--border);
+  margin: 16px 0;
+}
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin: 16px 0;
+}
+@media (max-width: 800px) {
+  .two-col { grid-template-columns: 1fr; }
+  .flow { flex-direction: column; }
+  .arrow { transform: rotate(90deg); }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Goal 记忆系统流程图</h1>
+<p class="subtitle">Oh-Myself v0.1 — 基于 OpenHarness 的 CLI 智能体规划平台</p>
+
+<!-- ==================== OVERVIEW ==================== -->
+<h2>1. 系统全景</h2>
+<div class="flow">
+  <div class="card card-human">
+    <h4><span class="icon">👤</span> 人类操作</h4>
+    <div class="step"><span class="cmd">/goal 学习Python</span><br><span class="note">创建目标 → 自动初始化 per-goal 目录</span></div>
+    <div class="step"><span class="cmd">/goal switch GOAL-xxx</span><br><span class="note">进入目标模式</span></div>
+    <div class="step"><span class="cmd">/exper add 内容</span><br><span class="note">积累经验</span></div>
+    <div class="step"><span class="cmd">/goal memory search</span><br><span class="note">检索记忆</span></div>
+    <div class="step"><span class="cmd">/goal exit</span><br><span class="note">退出（触发更新询问）</span></div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="card card-process">
+    <h4><span class="icon">🤖</span> AI Agent 处理</h4>
+    <div class="step"><span class="badge badge-system">Layer 4</span> 注入目标上下文到 System Prompt</div>
+    <div class="step"><span class="badge badge-ai">工具</span> AI 自主读写 memory/ 文件</div>
+    <div class="step"><span class="cmd">/goal memory update</span><br><span class="note">LLM 分析对话 → 更新记忆</span></div>
+    <div class="step"><span class="badge badge-ai">Subagent</span> goal_memory_retriever 检索记忆</div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="card card-storage">
+    <h4><span class="icon">💾</span> 持久化存储</h4>
+    <div class="step"><span class="path">goals/{id}/memory/</span><br><span class="note">AI 长期记忆（ai_notes/user_prefs/context）</span></div>
+    <div class="step"><span class="path">goals/{id}/experiences/</span><br><span class="note">目标专属经验库</span></div>
+    <div class="step"><span class="path">goals/{id}/sessions/</span><br><span class="note">会话索引 + 摘要</span></div>
+    <div class="step"><span class="path">data/sessions/{project}/</span><br><span class="note">原始会话快照</span></div>
+  </div>
+</div>
+
+<!-- ==================== DIRECTORY STRUCTURE ==================== -->
+<h2>2. 目录结构</h2>
+<div class="files">
+<table>
+<tr><th>路径</th><th>内容</th><th>维护者</th></tr>
+<tr>
+  <td class="mono">~/.ohmyself/goals/goals.json</td>
+  <td>所有 Goal 的结构化数据</td>
+  <td class="who"><span class="badge badge-system">系统</span></td>
+</tr>
+<tr>
+  <td class="mono">~/.ohmyself/goals/{goal-id}/memory/ai_notes.md</td>
+  <td>AI 整理的关键进度、决策、教训</td>
+  <td class="who"><span class="badge badge-ai">AI</span></td>
+</tr>
+<tr>
+  <td class="mono">~/.ohmyself/goals/{goal-id}/memory/user_prefs.md</td>
+  <td>目标上下文中的用户偏好</td>
+  <td class="who"><span class="badge badge-ai">AI</span></td>
+</tr>
+<tr>
+  <td class="mono">~/.ohmyself/goals/{goal-id}/memory/context.md</td>
+  <td>累积的关键上下文/知识</td>
+  <td class="who"><span class="badge badge-ai">AI</span></td>
+</tr>
+<tr>
+  <td class="mono">~/.ohmyself/goals/{goal-id}/experiences/default.md</td>
+  <td>目标专属经验条目</td>
+  <td class="who"><span class="badge badge-human">人类</span></td>
+</tr>
+<tr>
+  <td class="mono">~/.ohmyself/goals/{goal-id}/sessions/index.json</td>
+  <td>关联会话索引</td>
+  <td class="who"><span class="badge badge-system">系统</span></td>
+</tr>
+<tr>
+  <td class="mono">~/.ohmyself/goals/{goal-id}/sessions/summaries/</td>
+  <td>会话摘要（规划中）</td>
+  <td class="who"><span class="badge badge-ai">AI</span></td>
+</tr>
+<tr>
+  <td class="mono">~/.ohmyself/data/sessions/{proj-hash}/</td>
+  <td>原始会话快照 (latest.json)</td>
+  <td class="who"><span class="badge badge-system">系统</span></td>
+</tr>
+<tr>
+  <td class="mono">~/.ohmyself/experiences/</td>
+  <td>全局经验库（fallback）</td>
+  <td class="who"><span class="badge badge-human">人类</span></td>
+</tr>
+<tr>
+  <td class="mono">~/.ohmyself/plans/YYYY-MM-DD.md</td>
+  <td>每日 AI 整理后的计划</td>
+  <td class="who"><span class="badge badge-ai">AI</span></td>
+</tr>
+</table>
+</div>
+
+<!-- ==================== GOAL LIFECYCLE ==================== -->
+<h2>3. Goal 生命周期</h2>
+
+<div class="flow">
+  <div class="card card-trigger">
+    <h4><span class="icon">🚀</span> 创建</h4>
+    <div class="step"><span class="cmd">/goal 学习Python</span></div>
+    <div class="step">→ <code>append_goal()</code></div>
+    <div class="step">→ 写入 <span class="path">goals.json</span></div>
+    <div class="step">→ <code>ensure_goal_dir()</code><br><span class="note">创建 memory/ experiences/ sessions/ 骨架</span></div>
+    <div class="step">→ 限制：最多 <span class="badge badge-system">5</span> 个活跃目标</div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="card card-process">
+    <h4><span class="icon">🎯</span> 进入目标模式</h4>
+    <div class="step"><span class="cmd">/goal switch GOAL-xxx</span><br><span class="note">或 Tab 空提示符循环</span></div>
+    <div class="step">→ <code>GoalAgentContext.switch_to()</code></div>
+    <div class="step">→ 保存旧会话快照</div>
+    <div class="step">→ 关联旧会话到 goal</div>
+    <div class="step">→ 清空对话 → 新 session</div>
+    <div class="step">→ <span class="badge badge-system">Layer 4</span> 注入到 System Prompt</div>
+    <hr class="divider">
+    <div class="step">提示符：<span class="cmd">ohmy [学习Python] ></span></div>
+    <div class="step">所有 <span class="cmd">/exper</span> 默认写入 goal 专属库</div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="card card-trigger">
+    <h4><span class="icon">🚪</span> 退出 / 切换</h4>
+    <div class="step"><span class="cmd">/goal exit</span> 或 Tab 循环</div>
+    <div class="step">→ <code>_has_meaningful_conversation()</code><br><span class="note">检查是否有实际问答</span></div>
+    <div class="step">→ <b>有内容：</b>弹出确认</div>
+    <div class="step" style="padding-left:20px;border-left:2px solid var(--yellow)">
+      「当前对话有新的内容，是否更新目标记忆？ [Y/n]」
+    </div>
+    <div class="step">→ Y → <code>/goal memory update</code></div>
+    <div class="step">→ 清空对话 → 新 session</div>
+  </div>
+</div>
+
+<!-- ==================== MEMORY UPDATE FLOW ==================== -->
+<h2>4. 记忆更新流程 (AI 专属)</h2>
+
+<div class="section-desc">
+仅 AI 可写入长期记忆。人类通过 <code>/exper add</code> 写入经验库。<br>
+触发方式：<code>/goal memory update</code> 命令 或 退出目标时自动询问。
+</div>
+
+<div class="flow">
+  <div class="card card-trigger">
+    <h4><span class="icon">⚡</span> 触发</h4>
+    <div class="step">① <span class="cmd">/goal memory update</span><br><span class="note">手动触发</span></div>
+    <div class="step">② <span class="cmd">/goal exit</span><br><span class="note">退出时自动询问</span></div>
+    <div class="step">③ Tab 循环切换<br><span class="note">离开当前 goal 时询问</span></div>
+    <div class="step">④ AI 自主调用工具<br><span class="note">file_edit / file_write 写入 memory/</span></div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="card card-process">
+    <h4><span class="icon">🔄</span> 处理</h4>
+    <div class="step"><code>update_goal_memory_via_ai()</code></div>
+    <hr class="divider">
+    <div class="step">1. 读取已有记忆文件</div>
+    <div class="step">2. 提取对话文本</div>
+    <div class="step">3. 组装 prompt（含 goal 信息 + 已有记忆 + 对话）</div>
+    <div class="step">4. 调 LLM 分析 → 生成三部分更新</div>
+    <div class="step">5. 解析响应 → 追加到对应文件</div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="card card-output">
+    <h4><span class="icon">📝</span> 输出 (3 文件)</h4>
+    <div class="step"><span class="path">ai_notes.md</span><br><span class="note">新进度 / 关键决策 / 教训</span></div>
+    <div class="step"><span class="path">user_prefs.md</span><br><span class="note">学习到的用户偏好 / 约束</span></div>
+    <div class="step"><span class="path">context.md</span><br><span class="note">重要事实 / 项目状态</span></div>
+    <hr class="divider">
+    <div class="step"><span class="note">每部分内容为追加模式（不覆盖已有内容）。</span></div>
+    <div class="step"><span class="note">如果某部分无新内容，LLM 返回 "NONE"。</span></div>
+  </div>
+</div>
+
+<!-- ==================== MEMORY RETRIEVAL FLOW ==================== -->
+<h2>5. 记忆检索流程 (Subagent)</h2>
+
+<div class="section-desc">
+  Agent 在决策时可调用 <code>delegate_task("goal_memory_retriever")</code> 检索记忆。<br>
+  用户也可通过 <code>/goal memory search [query] [--deep]</code> 手动触发。
+</div>
+
+<div class="two-col">
+  <div class="card card-process">
+    <h4><span class="icon">🔍</span> 默认范围（快速）</h4>
+    <div class="step"><span class="badge badge-ai">检索</span> <span class="path">memory/ai_notes.md</span></div>
+    <div class="step"><span class="badge badge-ai">检索</span> <span class="path">memory/user_prefs.md</span></div>
+    <div class="step"><span class="badge badge-ai">检索</span> <span class="path">memory/context.md</span></div>
+    <div class="step"><span class="badge badge-human">检索</span> <span class="path">experiences/default.md</span></div>
+    <hr class="divider">
+    <div class="step" style="color: var(--green)">✓ 仅检索提炼后的内容<br>✓ 速度快，精准度高</div>
+  </div>
+  <div class="card card-process">
+    <h4><span class="icon">🔬</span> Deep 模式 <code>--deep</code></h4>
+    <div class="step" style="color: var(--muted)">（在默认基础上额外搜索）</div>
+    <div class="step"><span class="badge badge-ai">检索</span> <span class="path">sessions/summaries/</span></div>
+    <div class="step"><span class="badge badge-system">检索</span> <span class="path">data/sessions/</span> 原始快照</div>
+    <div class="step"><span class="badge badge-human">Fallback</span> 全局经验库</div>
+    <hr class="divider">
+    <div class="step" style="color: var(--yellow)">⚠ 数据量大，噪音多<br>⚠ 仅在需要回溯原始对话时使用</div>
+  </div>
+</div>
+
+<div class="card" style="max-width:100%;margin-top:16px">
+  <h4><span class="icon">📋</span> 检索报告格式</h4>
+  <div class="step">Subagent 返回结构化报告：</div>
+  <div class="step" style="padding-left:16px">- <b>来源文件</b>：完整路径</div>
+  <div class="step" style="padding-left:16px">- <b>记忆/经验 ID</b>：EXP-xxx 或条目标题</div>
+  <div class="step" style="padding-left:16px">- <b>原文摘录</b>：相关内容片段</div>
+  <div class="step" style="padding-left:16px">- <b>相关原因</b>：为什么与查询相关</div>
+  <div class="step" style="padding-left:16px">- <b>相关度</b>：高 / 中 / 低</div>
+</div>
+
+<!-- ==================== PLAN FLOW ==================== -->
+<h2>6. 每日计划流程</h2>
+
+<div class="flow">
+  <div class="card card-card-human">
+    <h4><span class="icon">📥</span> 捕捉</h4>
+    <div class="step"><span class="cmd">/plan [内容]</span></div>
+    <div class="step">→ <code>append_plan()</code></div>
+    <div class="step">→ 写入 <span class="path">plans/YYYY-MM-DD.inbox.md</span></div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="card card-process">
+    <h4><span class="icon">🤖</span> AI 整理</h4>
+    <div class="step">触发 <code>_stream_prompt()</code></div>
+    <div class="step">→ AI 读取 inbox + 活跃 Goal 列表</div>
+    <div class="step">→ 按 Goal topic 分组</div>
+    <div class="step">→ 检查未覆盖目标的长期事项</div>
+    <div class="step">→ 写入 <span class="path">plans/YYYY-MM-DD.md</span></div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="card card-output">
+    <h4><span class="icon">📋</span> 展示</h4>
+    <div class="step"><span class="cmd">/plan</span>（无参数）</div>
+    <div class="step">→ 读取当天整理后的计划</div>
+    <div class="step">→ 按 Goal 分组渲染为 Markdown</div>
+    <div class="step"><span class="note">inbox 保留原始条目，不删除</span></div>
+  </div>
+</div>
+
+<!-- ==================== COMMANDS REFERENCE ==================== -->
+<h2>7. 命令参考</h2>
+
+<div class="files">
+<table>
+<tr><th>命令</th><th>说明</th><th>维护者</th></tr>
+<tr><td class="mono">/goal [topic]</td><td>查看目标列表，或创建新目标</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/goal switch [id]</td><td>切换到指定目标的 Agent 上下文</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/goal exit</td><td>退出目标模式（自动询问是否更新记忆）</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/goal memory</td><td>查看当前目标的记忆文件内容</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/goal memory update</td><td>AI 分析对话并更新目标记忆</td><td class="who"><span class="badge badge-ai">AI</span></td></tr>
+<tr><td class="mono">/goal memory search [q]</td><td>检索目标记忆和经验（--deep 含历史会话）</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/goal sessions</td><td>查看关联到当前目标的会话列表</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/goal progress [id] [0-100]</td><td>更新目标进度（100% 自动完成）</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/goal done [id]</td><td>标记目标完成</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/goal stop [id]</td><td>停止目标</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/plan [内容]</td><td>展示今日计划，或添加条目并自动整理</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/exper add [内容]</td><td>添加经验条目</td><td class="who"><span class="badge badge-human">人类</span></td></tr>
+<tr><td class="mono">/exper [问题]</td><td>检索经验库回答问题</td><td class="who"><span class="badge badge-ai">AI</span></td></tr>
+<tr><td class="mono">/exper organize</td><td>AI 整理经验库到分类文件</td><td class="who"><span class="badge badge-ai">AI</span></td></tr>
+<tr><td class="mono">Tab</td><td>空提示符下循环切换 Goal</td><td class="who"><span class="badge badge-system">系统</span></td></tr>
+</table>
+</div>
+
+<!-- ==================== FOUR LAYER PROMPT ==================== -->
+<h2>8. System Prompt 四层结构</h2>
+
+<div class="two-col">
+  <div class="card">
+    <h4>通用模式</h4>
+    <div class="step" style="color: var(--accent)"># Layer 1: Base Prompt</div>
+    <div class="step" style="padding-left:16px;color:var(--muted)">基础人格：长期成长助手，48行中文 prompt</div>
+    <div class="step" style="color: var(--blue);margin-top:8px"># Layer 2: User Prompt</div>
+    <div class="step" style="padding-left:16px;color:var(--muted)">用户自定义系统提示词</div>
+    <div class="step" style="color: var(--green);margin-top:8px"># Layer 3: Model / User Profile</div>
+    <div class="step" style="padding-left:16px;color:var(--muted)">model_profile.md + user_profile.md</div>
+    <div class="step" style="color: var(--muted);margin-top:8px"># Environment</div>
+    <div class="step" style="padding-left:16px;color:var(--muted)">OS / Shell / CWD / Date / Git ...</div>
+  </div>
+  <div class="card" style="border-top: 3px solid var(--accent)">
+    <h4 style="color: var(--accent)">Goal 模式（+ Layer 4）</h4>
+    <div class="step">Layer 1 + 2 + 3（同上）</div>
+    <div class="step" style="color: var(--muted);margin-top:8px"># Environment</div>
+    <hr class="divider">
+    <div class="step" style="color: var(--accent)"># 当前专注目标</div>
+    <div class="step" style="padding-left:16px;color:var(--text)">- 目标: {topic}</div>
+    <div class="step" style="padding-left:16px;color:var(--text)">- 描述: {description}</div>
+    <div class="step" style="padding-left:16px;color:var(--text)">- 进度: {progress}% | 截止: {ends_at}</div>
+    <div class="step" style="color: var(--blue);margin-top:8px"># 目标 AI 笔记</div>
+    <div class="step" style="padding-left:16px;color:var(--muted)">最近 30 行 ai_notes.md</div>
+    <div class="step" style="color: var(--blue);margin-top:8px"># 目标用户偏好</div>
+    <div class="step" style="padding-left:16px;color:var(--muted)">最近 20 行 user_prefs.md</div>
+    <div class="step" style="color: var(--blue);margin-top:8px"># 最近相关会话</div>
+    <div class="step" style="padding-left:16px;color:var(--muted)">最近 3 个关联 session 摘要</div>
+    <hr class="divider">
+    <div class="step" style="color: var(--green)"># 目标模式说明</div>
+    <div class="step" style="padding-left:16px;color:var(--muted)">
+      经验查询默认优先搜索本目标专属库<br>
+      会话自动关联到此目标<br>
+      /goal exit 退出，Tab 键循环切换
+    </div>
+  </div>
+</div>
+
+<!-- ==================== DATA FLOW SUMMARY ==================== -->
+<h2>9. 数据流总览</h2>
+
+<div class="card" style="max-width:100%">
+<pre style="color:var(--text);font-size:0.85em;line-height:1.8;overflow-x:auto">
+┌─────────────────────────────────────────────────────────────────────┐
+│                          Oh-Myself REPL                            │
+│                                                                     │
+│  <span style="color:var(--purple)">人类</span> ──<span style="color:var(--accent)">/exper add</span>──→ <span style="color:var(--cyan)">goals/{id}/experiences/</span>  (经验库)      │
+│  <span style="color:var(--purple)">人类</span> ──<span style="color:var(--accent)">/plan</span>──────→ <span style="color:var(--cyan)">plans/YYYY-MM-DD.md</span>    (每日计划)      │
+│  <span style="color:var(--purple)">人类</span> ──<span style="color:var(--accent)">/goal switch</span>→ <span style="color:var(--accent)">[Goal Agent 模式]</span>                     │
+│                                                                     │
+│  <span style="color:var(--blue)">AI</span>  ──<span style="color:var(--accent)">/goal memory update</span>──→ <span style="color:var(--cyan)">memory/ai_notes.md</span>        │
+│  <span style="color:var(--blue)">AI</span>  ──自主工具调用─────→ <span style="color:var(--cyan)">memory/user_prefs.md</span>       │
+│  <span style="color:var(--blue)">AI</span>  ──自主工具调用─────→ <span style="color:var(--cyan)">memory/context.md</span>          │
+│                                                                     │
+│  <span style="color:var(--green)">Subagent</span> ──<span style="color:var(--accent)">goal_memory_retriever</span>──→ 检索 <span style="color:var(--cyan)">memory/</span> + <span style="color:var(--cyan)">experiences/</span>  │
+│            ──<span style="color:var(--yellow)">--deep</span>────────────→ + <span style="color:var(--cyan)">sessions/summaries/</span>         │
+│                                                                     │
+│  <span style="color:var(--green)">退出时</span> ──<span style="color:var(--accent)">有对话?</span>──Y→ 询问更新 ─→ <span style="color:var(--accent)">/goal memory update</span>        │
+│                                                                     │
+│  <span style="color:var(--muted)">Tab</span> ──空提示符──→ 循环切换 Goal ←→ 退出时同样触发更新询问        │
+└─────────────────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+</div>
+</body>
+</html>

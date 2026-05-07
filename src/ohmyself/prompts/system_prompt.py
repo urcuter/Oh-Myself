@@ -151,7 +151,16 @@ def normalize_user_system_prompt(value: str | None) -> str:
     return cleaned
 
 
-def build_system_prompt(custom_prompt: str | None = None, *, env: EnvironmentInfo | None = None, cwd: str | None = None) -> str:
+def build_system_prompt(
+    custom_prompt: str | None = None,
+    *,
+    env: EnvironmentInfo | None = None,
+    cwd: str | None = None,
+    goal_context: str | None = None,
+) -> str:
     resolved_env = env or get_environment_info(cwd=cwd)
     layered = _build_layered_prompt(normalize_user_system_prompt(custom_prompt))
-    return f"{layered}\n\n{_format_environment_section(resolved_env)}"
+    result = f"{layered}\n\n{_format_environment_section(resolved_env)}"
+    if goal_context:
+        result = f"{result}\n\n{goal_context}"
+    return result

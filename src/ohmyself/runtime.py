@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from uuid import uuid4
 
 from ohmyself.api.client import SupportsStreamingMessages
@@ -16,6 +16,9 @@ from ohmyself.permissions import PermissionChecker, PermissionMode
 from ohmyself.prompts.system_prompt import build_system_prompt
 from ohmyself.tools import create_tool_registry
 
+if TYPE_CHECKING:
+    from ohmyself.services.goal_agent import GoalAgentContext
+
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
 
 
@@ -26,6 +29,8 @@ class OhMyRuntime:
     settings_overrides: dict[str, Any]
     session_id: str
     session_started_at: datetime
+    active_goal_id: str | None = None
+    goal_context: "GoalAgentContext | None" = None
 
     def current_settings(self):
         settings = load_settings()
@@ -36,7 +41,10 @@ class OhMyRuntime:
         settings = self.current_settings()
         profile_name, profile = settings.resolve_profile()
         self.engine.set_model(profile.resolved_model)
-        self.engine.set_system_prompt(build_system_prompt(settings.system_prompt, cwd=self.cwd))
+        goal_context_prompt = ""
+        if self.goal_context is not None and self.goal_context.active_goal_id is not None:
+            goal_context_prompt = self.goal_context.build_goal_context_prompt()
+        self.engine.set_system_prompt(build_system_prompt(settings.system_prompt, cwd=self.cwd, goal_context=goal_context_prompt or None))
 
     def current_model(self) -> str:
         settings = self.current_settings()
@@ -51,6 +59,7 @@ class OhMyRuntime:
         self.engine.tool_metadata["agent_lineage"] = [self.session_id]
         self.engine.tool_metadata["subagent_runs"] = []
         self.engine.tool_metadata["subagent_semaphore"] = asyncio.Semaphore(2)
+        self.engine.tool_metadata["active_goal_id"] = self.active_goal_id
         return self.session_id
 
     def restore_session_snapshot(self, snapshot: dict[str, Any]) -> None:
@@ -66,9 +75,11 @@ class OhMyRuntime:
         self.engine.tool_metadata["session_id"] = session_id
         restored_tool_metadata = snapshot.get("tool_metadata")
         if isinstance(restored_tool_metadata, dict):
-            for key in ("active_profile", "active_artifacts", "last_goal", "subagent_runs", "agent_depth", "agent_lineage"):
+            for key in ("active_profile", "active_artifacts", "last_goal", "subagent_runs", "agent_depth", "agent_lineage", "active_goal_id"):
                 if key in restored_tool_metadata:
                     self.engine.tool_metadata[key] = restored_tool_metadata[key]
+            if "active_goal_id" in restored_tool_metadata:
+                self.active_goal_id = restored_tool_metadata["active_goal_id"]
         self.engine.tool_metadata.setdefault("agent_depth", 0)
         self.engine.tool_metadata.setdefault("agent_lineage", [session_id])
         self.engine.tool_metadata.setdefault("subagent_runs", [])
@@ -176,6 +187,7 @@ async def build_runtime(
             "agent_lineage": [session_id],
             "subagent_runs": [],
             "subagent_semaphore": asyncio.Semaphore(2),
+            "active_goal_id": None,
         },
     )
     return OhMyRuntime(

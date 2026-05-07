@@ -50,7 +50,19 @@ from ohmyself.services import (
     stop_goal,
     update_goal_progress,
 )
+from ohmyself.services.goal_agent import GoalAgentContext
+from ohmyself.services.goal_memory import (
+    read_goal_memory,
+    append_goal_memory,
+    update_goal_memory_via_ai,
+    AI_NOTES_FILENAME,
+    USER_PREFS_FILENAME,
+    CONTEXT_FILENAME,
+)
+from ohmyself.services.goal_memory_retriever import build_goal_memory_retrieval_task
+from ohmyself.services.goal_session import list_goal_sessions
 from ohmyself.terminal_ui import (
+    GOAL_CYCLE_SENTINEL,
     RestoredSessionSummary,
     console,
     make_live_markdown,
@@ -69,6 +81,8 @@ from ohmyself.terminal_ui import (
     print_markdown,
     print_subagent_completed,
     print_subagent_started,
+    print_goal_switch_feedback,
+    prompt_goal_memory_update,
 )
 from ohmyself.tools import create_tool_registry
 from ohmyself.tools.base import ToolExecutionContext, ToolRegistry
@@ -118,6 +132,8 @@ def _sync_transcript_writer(runtime: OhMyRuntime, transcript: SessionTranscriptW
 
 
 def _save_runtime_snapshot(runtime: OhMyRuntime) -> None:
+    tool_metadata = dict(runtime.engine.tool_metadata)
+    tool_metadata["active_goal_id"] = runtime.active_goal_id
     save_session_snapshot(
         cwd=runtime.cwd,
         model=runtime.engine.model,
@@ -125,7 +141,7 @@ def _save_runtime_snapshot(runtime: OhMyRuntime) -> None:
         usage=runtime.engine.total_usage,
         session_id=runtime.session_id,
         session_started_at=runtime.session_started_at.isoformat(),
-        tool_metadata=runtime.engine.tool_metadata,
+        tool_metadata=tool_metadata,
     )
 
 
@@ -293,6 +309,11 @@ def _runtime_status_rows(runtime: OhMyRuntime) -> list[tuple[str, str]]:
     settings = runtime.current_settings()
     profile_name, profile = settings.resolve_profile(runtime.settings_overrides.get("active_profile"))
     configured = AuthManager(settings).get_profile_statuses()[profile_name]["configured"]
+    goal_topic = ""
+    if runtime.goal_context is not None:
+        active = runtime.goal_context.active_goal()
+        if active:
+            goal_topic = active.topic
     return [
         ("config", str(get_settings_path())),
         ("home", str(get_home_dir())),
@@ -304,6 +325,7 @@ def _runtime_status_rows(runtime: OhMyRuntime) -> list[tuple[str, str]]:
         ("tools", str(len(_list_tools_data()))),
         ("workspace", runtime.cwd),
         ("session", runtime.session_id),
+        ("goal", goal_topic or "(none)"),
     ]
 
 
@@ -475,7 +497,7 @@ async def _handle_user_profile_command(runtime: OhMyRuntime, transcript: Session
     transcript.record_status("User Profile", f"Updated user profile: {path}")
 
 
-async def _retrieve_experience_matches(runtime: OhMyRuntime, transcript: SessionTranscriptWriter, question: str) -> str | None:
+async def _retrieve_experience_matches(runtime: OhMyRuntime, transcript: SessionTranscriptWriter, question: str, *, goal_id: str | None = None) -> str | None:
     runtime.refresh_system_prompt(question)
     registry = runtime.engine.tool_metadata.get("tool_registry")
     if not isinstance(registry, ToolRegistry):
@@ -486,7 +508,7 @@ async def _retrieve_experience_matches(runtime: OhMyRuntime, transcript: Session
         print_error("Experience retrieval is unavailable: delegate_task tool is missing.")
         return None
 
-    task = build_experience_retrieval_task(question)
+    task = build_experience_retrieval_task(question, goal_id=goal_id)
     arguments = DelegateTaskToolInput(
         task=task,
         role="experience_retriever",
@@ -544,7 +566,7 @@ async def _handle_experience_command(runtime: OhMyRuntime, transcript: SessionTr
             print_error("Usage: /exper add [content]")
             return
         try:
-            entry = append_experience(content)
+            entry = append_experience(content, goal_id=runtime.active_goal_id)
         except Exception as exc:
             print_error(f"Failed to add experience: {exc}")
             transcript.record_status("Experience", f"Failed to add experience: {exc}")
@@ -558,7 +580,7 @@ async def _handle_experience_command(runtime: OhMyRuntime, transcript: SessionTr
     if not has_experience_content():
         print_error(f"No experience entries found. Add one with /exper add [content]. Directory: {get_experience_dir()}")
         return
-    retrieval_report = await _retrieve_experience_matches(runtime, transcript, cleaned)
+    retrieval_report = await _retrieve_experience_matches(runtime, transcript, cleaned, goal_id=runtime.active_goal_id)
     if retrieval_report is None:
         return
     await _stream_prompt(runtime, build_experience_answer_prompt(cleaned, retrieval_report), transcript)
@@ -611,11 +633,49 @@ async def _handle_goal_command(
     transcript: SessionTranscriptWriter,
     instruction: str,
 ) -> None:
-    del runtime
     cleaned = instruction.strip()
 
     if not cleaned:
         print_markdown(format_goals_markdown())
+        return
+
+    if cleaned.startswith("switch ") or cleaned == "switch":
+        goal_id = cleaned[len("switch "):].strip() if cleaned.startswith("switch ") else ""
+        if not goal_id:
+            print_error("Usage: /goal switch [id]")
+            return
+        _perform_goal_switch(runtime, transcript, goal_id)
+        return
+
+    if cleaned == "exit":
+        await _perform_goal_exit(runtime, transcript)
+        return
+
+    if cleaned == "memory":
+        _handle_goal_memory_show(runtime)
+        return
+
+    if cleaned == "memory update":
+        await _handle_goal_memory_update(runtime, transcript)
+        return
+
+    if cleaned.startswith("memory search "):
+        query = cleaned[len("memory search "):].strip()
+        if not query:
+            print_error("Usage: /goal memory search [query] [--deep]")
+            return
+        deep = " --deep" in query
+        if deep:
+            query = query.replace(" --deep", "").strip()
+        await _handle_goal_memory_search(runtime, transcript, query, deep=deep)
+        return
+
+    if cleaned.startswith("memory search"):
+        print_error("Usage: /goal memory search [query] [--deep]")
+        return
+
+    if cleaned == "sessions":
+        _handle_goal_sessions_show(runtime)
         return
 
     if cleaned.startswith("progress "):
@@ -688,6 +748,213 @@ async def _handle_goal_command(
         markdown=format_goals_markdown(),
     )
     transcript.record_status("Goal", f"Added {entry.entry_id} to {entry.path}")
+
+
+def _perform_goal_switch(runtime: OhMyRuntime, transcript: SessionTranscriptWriter, goal_id: str) -> None:
+    if runtime.goal_context is None:
+        print_error("Goal context is not available.")
+        return
+    goal = runtime.goal_context.switch_to(goal_id)
+    if goal is None:
+        print_error(f"Goal not found: {goal_id}. Use /goal to list active goals.")
+        return
+    _save_runtime_snapshot(runtime)
+    runtime.active_goal_id = goal_id
+    runtime.engine.tool_metadata["active_goal_id"] = goal_id
+    runtime.goal_context.record_session_link(
+        runtime.session_id,
+        cwd=runtime.cwd,
+        model=runtime.current_model(),
+        message_count=len(runtime.engine.messages),
+    )
+    runtime.engine.clear()
+    runtime.start_new_session()
+    runtime.engine.tool_metadata["active_goal_id"] = goal_id
+    _sync_transcript_writer(runtime, transcript)
+    runtime.refresh_system_prompt()
+    _save_runtime_snapshot(runtime)
+    print_goal_switch_feedback(goal.topic)
+    transcript.record_status("Goal", f"Switched to {goal.entry_id} ({goal.topic})")
+
+
+async def _perform_goal_exit(runtime: OhMyRuntime, transcript: SessionTranscriptWriter) -> None:
+    if runtime.goal_context is None:
+        print_error("Goal context is not available.")
+        return
+    if runtime.goal_context.active_goal_id is None:
+        print_status("Not currently in goal mode.")
+        return
+    await _maybe_prompt_memory_update_on_leave(runtime, transcript)
+    _save_runtime_snapshot(runtime)
+    runtime.goal_context.exit_goal()
+    runtime.active_goal_id = None
+    runtime.engine.clear()
+    runtime.start_new_session()
+    runtime.engine.tool_metadata["active_goal_id"] = None
+    _sync_transcript_writer(runtime, transcript)
+    runtime.refresh_system_prompt()
+    _save_runtime_snapshot(runtime)
+    print_goal_switch_feedback(None)
+    transcript.record_status("Goal", "Exited goal mode")
+
+
+async def _maybe_prompt_memory_update_on_leave(runtime: OhMyRuntime, transcript: SessionTranscriptWriter) -> None:
+    if not _has_meaningful_conversation(runtime):
+        return
+    if not prompt_goal_memory_update():
+        return
+    await _handle_goal_memory_update(runtime, transcript)
+
+
+def _handle_goal_memory_show(runtime: OhMyRuntime) -> None:
+    goal_id = runtime.active_goal_id
+    if not goal_id:
+        print_error("Not in goal mode. Use /goal switch [id] to enter a goal first.")
+        return
+    lines: list[str] = [f"# Goal Memory for {goal_id}"]
+    for filename, label in [
+        (AI_NOTES_FILENAME, "AI Notes"),
+        (USER_PREFS_FILENAME, "User Preferences"),
+        (CONTEXT_FILENAME, "Context"),
+    ]:
+        content = read_goal_memory(goal_id, filename)
+        if content.strip():
+            lines.append(f"\n## {label}\n\n{content}")
+        else:
+            lines.append(f"\n## {label}\n\n(empty)")
+    print_markdown("\n".join(lines))
+
+
+def _handle_goal_sessions_show(runtime: OhMyRuntime) -> None:
+    goal_id = runtime.active_goal_id
+    if not goal_id:
+        print_error("Not in goal mode. Use /goal switch [id] to enter a goal first.")
+        return
+    sessions = list_goal_sessions(goal_id)
+    if not sessions:
+        print_status(f"No sessions linked to goal {goal_id} yet.")
+        return
+    lines: list[str] = [f"# Sessions linked to {goal_id}"]
+    for s in sessions:
+        sid = s.get("session_id", "unknown")
+        linked = s.get("linked_at", "")
+        summary = s.get("summary", "").strip()
+        msg_count = s.get("message_count", 0)
+        line = f"- `{sid}` ({linked}) - {msg_count} msgs"
+        if summary:
+            line += f": {summary[:80]}"
+        lines.append(line)
+    print_markdown("\n".join(lines))
+
+
+def _has_meaningful_conversation(runtime: OhMyRuntime) -> bool:
+    for msg in runtime.engine.messages:
+        if msg.role == "user" and msg.text.strip():
+            return True
+    return False
+
+
+async def _handle_goal_memory_update(runtime: OhMyRuntime, transcript: SessionTranscriptWriter) -> None:
+    goal_id = runtime.active_goal_id
+    if not goal_id:
+        print_error("Not in goal mode. Use /goal switch [id] to enter a goal first.")
+        return
+    goal_context = runtime.goal_context
+    if goal_context is None:
+        print_error("Goal context is not available.")
+        return
+    goal = goal_context.active_goal()
+    if goal is None:
+        print_error("Active goal not found.")
+        return
+    if not runtime.engine.messages:
+        print_status("No conversation to analyze.")
+        return
+    print_status("Updating goal memory from conversation...")
+    try:
+        updates = await update_goal_memory_via_ai(
+            goal_id=goal_id,
+            api_client=runtime.engine.api_client,
+            model=runtime.engine.model,
+            max_tokens=runtime.engine.max_tokens,
+            conversation=runtime.engine.messages,
+            goal_entry=goal,
+        )
+    except Exception as exc:
+        print_error(f"Failed to update goal memory: {exc}")
+        transcript.record_status("Goal Memory", f"Update failed: {exc}")
+        return
+    if updates:
+        updated_files = ", ".join(updates.keys())
+        print_status(f"Goal memory updated: {updated_files}")
+        transcript.record_status("Goal Memory", f"Updated: {updated_files}")
+    else:
+        print_status("No new memory to add.")
+        transcript.record_status("Goal Memory", "No updates needed")
+
+
+async def _handle_goal_memory_search(
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+    query: str,
+    *,
+    deep: bool = False,
+) -> None:
+    goal_id = runtime.active_goal_id
+    if not goal_id:
+        print_error("Not in goal mode. Use /goal switch [id] to enter a goal first.")
+        return
+    registry = runtime.engine.tool_metadata.get("tool_registry")
+    if not isinstance(registry, ToolRegistry):
+        print_error("Memory search is unavailable: tool registry is missing.")
+        return
+    tool = registry.get("delegate_task")
+    if not isinstance(tool, DelegateTaskTool):
+        print_error("Memory search is unavailable: delegate_task tool is missing.")
+        return
+
+    task = build_goal_memory_retrieval_task(goal_id, query, deep=deep)
+    arguments = DelegateTaskToolInput(
+        task=task,
+        role="goal_memory_retriever",
+        allowed_tools=["glob", "read_file", "grep"],
+        read_only=True,
+        max_turns=6,
+        timeout_seconds=90.0,
+    )
+    print_subagent_started(arguments.role, arguments.task, read_only=arguments.read_only)
+    transcript.record_status("Subagent", f"started role={arguments.role}")
+    result = await tool.execute(
+        arguments,
+        ToolExecutionContext(
+            cwd=Path(runtime.cwd),
+            metadata={
+                "api_client": runtime.engine.api_client,
+                "tool_registry": registry,
+                "permission_checker": runtime.engine.permission_checker,
+                "model": runtime.engine.model,
+                "system_prompt": runtime.engine.system_prompt,
+                "max_tokens": runtime.engine.max_tokens,
+                "permission_prompt": runtime.engine.permission_prompt,
+                **runtime.engine.tool_metadata,
+            },
+        ),
+    )
+    subagent = result.metadata.get("subagent")
+    if isinstance(subagent, dict):
+        session_id = str(subagent.get("session_id") or "")
+        summary = str(subagent.get("summary") or result.output).strip()
+        timed_out = bool(subagent.get("timed_out", False))
+    else:
+        session_id = ""
+        summary = result.output.strip()
+        timed_out = False
+    print_subagent_completed(arguments.role, summary, session_id=session_id, is_error=result.is_error, timed_out=timed_out)
+    transcript.record_status("Subagent", f"completed role={arguments.role}")
+    if result.is_error:
+        print_error(summary.splitlines()[0] if summary else "Memory search failed.")
+        return
+    print_markdown(result.output)
 
 
 def _parse_goal_add_arguments(raw: str) -> tuple[str, str, date | None, int]:
@@ -860,6 +1127,10 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         active_profile=active_profile,
         permission_prompt=_permission_prompt,
     )
+    goal_context = GoalAgentContext()
+    goal_context.refresh_goals()
+    runtime.goal_context = goal_context
+
     transcript = _build_transcript_writer(runtime)
     settings = runtime.current_settings()
     profile_name, profile = settings.resolve_profile(runtime.settings_overrides.get("active_profile"))
@@ -874,10 +1145,17 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
     )
     while True:
         try:
+            goal_topic = ""
+            if goal_context.active_goal_id:
+                active = goal_context.active_goal()
+                if active:
+                    goal_topic = active.topic
             line = await asyncio.to_thread(
                 prompt_input,
                 model_name=runtime.current_model(),
                 plan_topics=_active_goal_topics(),
+                goal_context=goal_context,
+                goal_topic=goal_topic,
             )
         except EOFError:
             console().print()
@@ -888,6 +1166,9 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
             continue
         stripped = line.strip()
         if not stripped:
+            continue
+        if stripped.startswith(GOAL_CYCLE_SENTINEL):
+            await _handle_goal_cycle(runtime, transcript, stripped)
             continue
         if stripped == "/":
             print_help_panel()
@@ -926,9 +1207,8 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
             runtime.engine.clear()
             runtime.start_new_session()
             _sync_transcript_writer(runtime, transcript)
+            runtime.refresh_system_prompt()
             console().print()
-            settings = runtime.current_settings()
-            profile_name, profile = settings.resolve_profile(runtime.settings_overrides.get("active_profile"))
             print_status("Conversation cleared.")
             console().print()
             continue
@@ -940,6 +1220,37 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
             print_help_panel()
             continue
         await _stream_prompt(runtime, stripped, transcript)
+
+
+async def _handle_goal_cycle(runtime: OhMyRuntime, transcript: SessionTranscriptWriter, sentinel_line: str) -> None:
+    goal_context = runtime.goal_context
+    if goal_context is None:
+        return
+    if goal_context.active_goal_id is not None:
+        await _maybe_prompt_memory_update_on_leave(runtime, transcript)
+    _save_runtime_snapshot(runtime)
+    new_goal_id = goal_context.active_goal_id
+    runtime.active_goal_id = new_goal_id
+    runtime.engine.tool_metadata["active_goal_id"] = new_goal_id
+    if new_goal_id:
+        goal_context.record_session_link(
+            runtime.session_id,
+            cwd=runtime.cwd,
+            model=runtime.current_model(),
+            message_count=len(runtime.engine.messages),
+        )
+    runtime.engine.clear()
+    runtime.start_new_session()
+    runtime.engine.tool_metadata["active_goal_id"] = new_goal_id
+    _sync_transcript_writer(runtime, transcript)
+    runtime.refresh_system_prompt()
+    _save_runtime_snapshot(runtime)
+    if new_goal_id:
+        active = goal_context.active_goal()
+        topic = active.topic if active else ""
+        print_goal_switch_feedback(topic)
+    else:
+        print_goal_switch_feedback(None)
 
 
 async def run_print_mode(*, prompt: str, cwd: str, model: str | None, max_turns: int | None, base_url: str | None, system_prompt: str | None, api_key: str | None, api_format: str | None, permission_mode: str | None, active_profile: str | None) -> None:
