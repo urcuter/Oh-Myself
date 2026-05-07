@@ -20,6 +20,7 @@ from ohmyself.services.goal_session import (
 @dataclass
 class GoalAgentContext:
     active_goal_id: str | None = None
+    previous_goal_id: str | None = None
     available_goals: list[GoalEntry] = field(default_factory=list)
     cycle_index: int = 0
 
@@ -42,6 +43,7 @@ class GoalAgentContext:
         self.refresh_goals()
         for goal in self.available_goals:
             if goal.entry_id == goal_id:
+                self.previous_goal_id = self.active_goal_id
                 self.active_goal_id = goal_id
                 self.cycle_index = self.available_goals.index(goal) if goal in self.available_goals else 0
                 ensure_goal_memory_dirs(goal_id)
@@ -50,15 +52,18 @@ class GoalAgentContext:
         return None
 
     def exit_goal(self) -> None:
+        self.previous_goal_id = self.active_goal_id
         self.active_goal_id = None
 
     def cycle_next(self) -> GoalEntry | None:
         self.refresh_goals()
         if not self.available_goals:
+            self.previous_goal_id = self.active_goal_id
             self.active_goal_id = None
             return None
 
         if self.active_goal_id is None:
+            self.previous_goal_id = None
             self.cycle_index = 0
             self.active_goal_id = self.available_goals[0].entry_id
             goal = self.available_goals[0]
@@ -68,10 +73,12 @@ class GoalAgentContext:
 
         next_index = self.cycle_index + 1
         if next_index >= len(self.available_goals):
+            self.previous_goal_id = self.active_goal_id
             self.active_goal_id = None
             self.cycle_index = 0
             return None
 
+        self.previous_goal_id = self.active_goal_id
         self.cycle_index = next_index
         self.active_goal_id = self.available_goals[next_index].entry_id
         goal = self.available_goals[next_index]

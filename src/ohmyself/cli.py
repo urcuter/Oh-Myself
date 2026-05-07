@@ -43,7 +43,9 @@ from ohmyself.services import (
     has_plan_content,
     has_plan_inbox_content,
     list_goals,
+    list_project_sessions,
     load_latest_session_snapshot,
+    load_session_snapshot_by_id,
     read_plan_inbox,
     read_today_plan,
     save_session_snapshot,
@@ -183,17 +185,62 @@ def _temporary_tool_metadata_flag(runtime: OhMyRuntime, key: str, value: object)
             runtime.engine.tool_metadata[key] = previous
 
 
-def _handle_restore_command(runtime: OhMyRuntime, transcript: SessionTranscriptWriter) -> None:
+def _handle_restore_command(runtime: OhMyRuntime, transcript: SessionTranscriptWriter, *, session_id: str | None = None) -> None:
+    if session_id:
+        snapshot = load_session_snapshot_by_id(runtime.cwd, session_id)
+        if snapshot is None:
+            print_error(f"Session '{session_id}' not found in this workspace.")
+            return
+        messages = snapshot.get("messages", [])
+        if not messages:
+            print_error(f"Session '{session_id}' has no messages.")
+            return
+        runtime.restore_session_snapshot(snapshot)
+        _sync_transcript_writer(runtime, transcript)
+        print_status(f"Restored session {session_id} with {len(messages)} messages.")
+        transcript.record_status("Session", f"Restored {session_id} ({len(messages)} msgs)")
+        return
+
     restored_summary = _restore_latest_session(runtime)
     if restored_summary is None:
-        message = "No saved session is available for this workspace."
-        print_status(message)
-        transcript.record_status("Session", message)
+        print_status("No saved session is available for this workspace.")
+        transcript.record_status("Session", "No saved session available")
         return
     _sync_transcript_writer(runtime, transcript)
     message = f"Restored session {restored_summary.session_id} with {restored_summary.message_count} messages."
     print_status(message)
     transcript.record_status("Session", message)
+
+
+def _handle_sessions_list(runtime: OhMyRuntime) -> None:
+    from datetime import datetime, timezone
+
+    sessions = list_project_sessions(runtime.cwd)
+    if not sessions:
+        print_status("No saved sessions in this workspace.")
+        return
+    latest_id = runtime.session_id
+    lines: list[str] = [f"# Sessions in {runtime.cwd}"]
+    for s in sessions:
+        sid = s.get("session_id", "?")
+        summary = s.get("summary", "")
+        msg_count = s.get("message_count", 0)
+        model = s.get("model", "")
+        started = s.get("session_started_at", "")
+        marker = " <-- current" if sid == latest_id else ""
+        line = f"- `{sid}` ({msg_count} msgs, {model})"
+        if summary:
+            line += f": {summary}"
+        if started:
+            try:
+                dt = datetime.fromisoformat(str(started))
+                local_dt = dt.astimezone()
+                line += f" — {local_dt.strftime('%m-%d %H:%M')}"
+            except ValueError:
+                pass
+        line += marker
+        lines.append(line)
+    print_markdown("\n".join(lines))
 
 
 async def _stream_prompt(runtime: OhMyRuntime, prompt: str, transcript: SessionTranscriptWriter) -> None:
@@ -809,6 +856,14 @@ def _perform_goal_switch(runtime: OhMyRuntime, transcript: SessionTranscriptWrit
     if runtime.goal_context is None:
         print_error("Goal context is not available.")
         return
+    if runtime.goal_context.active_goal_id is not None:
+        _save_runtime_snapshot(runtime)
+        runtime.goal_context.record_session_link(
+            runtime.session_id,
+            cwd=runtime.cwd,
+            model=runtime.current_model(),
+            message_count=len(runtime.engine.messages),
+        )
     goal = runtime.goal_context.switch_to(goal_id)
     if goal is None:
         print_error(f"Goal not found: {goal_id}. Use /goal to list active goals.")
@@ -816,12 +871,6 @@ def _perform_goal_switch(runtime: OhMyRuntime, transcript: SessionTranscriptWrit
     _save_runtime_snapshot(runtime)
     runtime.active_goal_id = goal_id
     runtime.engine.tool_metadata["active_goal_id"] = goal_id
-    runtime.goal_context.record_session_link(
-        runtime.session_id,
-        cwd=runtime.cwd,
-        model=runtime.current_model(),
-        message_count=len(runtime.engine.messages),
-    )
     runtime.engine.clear()
     runtime.start_new_session()
     runtime.engine.tool_metadata["active_goal_id"] = goal_id
@@ -1309,8 +1358,12 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         if stripped == "/status":
             print_status_panel(_runtime_status_rows(runtime))
             continue
-        if stripped == "/restore":
-            _handle_restore_command(runtime, transcript)
+        if stripped == "/restore" or stripped.startswith("/restore "):
+            sid = stripped[len("/restore "):].strip() if stripped.startswith("/restore ") else None
+            _handle_restore_command(runtime, transcript, session_id=sid)
+            continue
+        if stripped == "/sessions":
+            _handle_sessions_list(runtime)
             continue
         if stripped.startswith("/user_profile"):
             instruction = stripped[len("/user_profile") :].strip()
@@ -1357,13 +1410,16 @@ async def _handle_goal_cycle(runtime: OhMyRuntime, transcript: SessionTranscript
     new_goal_id = goal_context.active_goal_id
     runtime.active_goal_id = new_goal_id
     runtime.engine.tool_metadata["active_goal_id"] = new_goal_id
-    if new_goal_id:
+    if goal_context.previous_goal_id:
+        saved_active = goal_context.active_goal_id
+        goal_context.active_goal_id = goal_context.previous_goal_id
         goal_context.record_session_link(
             runtime.session_id,
             cwd=runtime.cwd,
             model=runtime.current_model(),
             message_count=len(runtime.engine.messages),
         )
+        goal_context.active_goal_id = saved_active
     runtime.engine.clear()
     runtime.start_new_session()
     runtime.engine.tool_metadata["active_goal_id"] = new_goal_id
