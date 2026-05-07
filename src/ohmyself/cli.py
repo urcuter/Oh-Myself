@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -65,24 +66,26 @@ from ohmyself.terminal_ui import (
     GOAL_CYCLE_SENTINEL,
     RestoredSessionSummary,
     console,
+    format_assistant_chunk,
     make_live_markdown,
-    update_live_markdown,
-    print_error,
-    print_help_panel,
-    prompt_permission,
-    print_status,
     print_context_snapshot,
-    print_status_panel,
-    print_tool_completed,
-    print_tool_started,
-    print_welcome,
-    print_tools_panel,
-    prompt_input,
+    print_error,
+    print_goal_switch_feedback,
+    print_help_panel,
     print_markdown,
+    print_status,
+    prompt_goal_memory_update,
+    prompt_input,
+    prompt_permission,
+    print_status_panel,
     print_subagent_completed,
     print_subagent_started,
-    print_goal_switch_feedback,
-    prompt_goal_memory_update,
+    print_tool_completed,
+    print_tool_started,
+    print_tools_panel,
+    print_welcome,
+    supports_live_markdown,
+    update_live_markdown,
 )
 from ohmyself.tools import create_tool_registry
 from ohmyself.tools.base import ToolExecutionContext, ToolRegistry
@@ -161,6 +164,20 @@ def _restore_latest_session(runtime: OhMyRuntime) -> RestoredSessionSummary | No
     )
 
 
+@contextmanager
+def _temporary_tool_metadata_flag(runtime: OhMyRuntime, key: str, value: object):
+    sentinel = object()
+    previous = runtime.engine.tool_metadata.get(key, sentinel)
+    runtime.engine.tool_metadata[key] = value
+    try:
+        yield
+    finally:
+        if previous is sentinel:
+            runtime.engine.tool_metadata.pop(key, None)
+        else:
+            runtime.engine.tool_metadata[key] = previous
+
+
 def _handle_restore_command(runtime: OhMyRuntime, transcript: SessionTranscriptWriter) -> None:
     restored_summary = _restore_latest_session(runtime)
     if restored_summary is None:
@@ -186,6 +203,10 @@ async def _stream_prompt_with_ui(runtime: OhMyRuntime, prompt: str, transcript: 
     output_started = False
     after_tool = False  # blank line needed before next assistant text
     assistant_buffer = ""
+    streamed_text = False
+    line_start = True
+    first_line = True
+    use_live_markdown = supports_live_markdown()
     live: object = None  # rich.Live instance while streaming assistant text
 
     def _stop_live() -> None:
@@ -202,15 +223,27 @@ async def _stream_prompt_with_ui(runtime: OhMyRuntime, prompt: str, transcript: 
                     console().print()
                     output_started = True
                 if event.text:
-                    assistant_buffer += event.text
-                    if live is None:
+                    if use_live_markdown:
+                        assistant_buffer += event.text
+                        if live is None:
+                            if after_tool:
+                                console().print()
+                                after_tool = False
+                            live = make_live_markdown(assistant_buffer)
+                            live.start()  # type: ignore[union-attr]
+                        else:
+                            update_live_markdown(live, assistant_buffer)  # type: ignore[union-attr]
+                    else:
                         if after_tool:
                             console().print()
                             after_tool = False
-                        live = make_live_markdown(assistant_buffer)
-                        live.start()  # type: ignore[union-attr]
-                    else:
-                        update_live_markdown(live, assistant_buffer)  # type: ignore[union-attr]
+                        rendered, line_start, first_line = format_assistant_chunk(
+                            event.text,
+                            line_start=line_start,
+                            first_line=first_line,
+                        )
+                        console().print(rendered, end="")
+                        streamed_text = True
 
             elif isinstance(event, AssistantTurnComplete):
                 if not output_started and event.message.text.strip():
@@ -219,7 +252,7 @@ async def _stream_prompt_with_ui(runtime: OhMyRuntime, prompt: str, transcript: 
                 if live is not None:
                     update_live_markdown(live, event.message.text or assistant_buffer)  # type: ignore[union-attr]
                     _stop_live()
-                elif event.message.text.strip():
+                elif event.message.text.strip() and not streamed_text:
                     if after_tool:
                         console().print()
                         after_tool = False
@@ -365,6 +398,10 @@ async def _continue_pending(runtime: OhMyRuntime, transcript: SessionTranscriptW
     output_started = False
     after_tool = False
     assistant_buffer = ""
+    streamed_text = False
+    line_start = True
+    first_line = True
+    use_live_markdown = supports_live_markdown()
     live: object = None
 
     def _stop_live() -> None:
@@ -381,15 +418,27 @@ async def _continue_pending(runtime: OhMyRuntime, transcript: SessionTranscriptW
                     console().print()
                     output_started = True
                 if event.text:
-                    assistant_buffer += event.text
-                    if live is None:
+                    if use_live_markdown:
+                        assistant_buffer += event.text
+                        if live is None:
+                            if after_tool:
+                                console().print()
+                                after_tool = False
+                            live = make_live_markdown(assistant_buffer)
+                            live.start()  # type: ignore[union-attr]
+                        else:
+                            update_live_markdown(live, assistant_buffer)  # type: ignore[union-attr]
+                    else:
                         if after_tool:
                             console().print()
                             after_tool = False
-                        live = make_live_markdown(assistant_buffer)
-                        live.start()  # type: ignore[union-attr]
-                    else:
-                        update_live_markdown(live, assistant_buffer)  # type: ignore[union-attr]
+                        rendered, line_start, first_line = format_assistant_chunk(
+                            event.text,
+                            line_start=line_start,
+                            first_line=first_line,
+                        )
+                        console().print(rendered, end="")
+                        streamed_text = True
 
             elif isinstance(event, AssistantTurnComplete):
                 if not output_started and event.message.text.strip():
@@ -398,7 +447,7 @@ async def _continue_pending(runtime: OhMyRuntime, transcript: SessionTranscriptW
                 if live is not None:
                     update_live_markdown(live, event.message.text or assistant_buffer)  # type: ignore[union-attr]
                     _stop_live()
-                elif event.message.text.strip():
+                elif event.message.text.strip() and not streamed_text:
                     if after_tool:
                         console().print()
                         after_tool = False
@@ -612,7 +661,8 @@ async def _handle_plan_command(
         transcript.record_status("Plan", f"Failed to add plan entry: {exc}")
         return
     transcript.record_status("Plan", f"Added {entry.entry_id} to {entry.path}")
-    await _stream_prompt(runtime, _build_plan_prompt(), transcript)
+    with _temporary_tool_metadata_flag(runtime, "auto_allow_write_file_for_plan", True):
+        await _stream_prompt(runtime, _build_plan_prompt(), transcript)
     organized, _ = read_today_plan()
     if not organized.strip():
         inbox_content, inbox_path = read_plan_inbox()

@@ -141,6 +141,14 @@ def _strip_think_blocks(buf: str) -> tuple[str, str]:
     return cleaned, ""
 
 
+def _normalize_visible_delta(visible: str, collected_content: str) -> str:
+    if not visible:
+        return ""
+    if visible.startswith(collected_content):
+        return visible[len(collected_content):]
+    return visible
+
+
 class OpenAICompatibleClient:
     def __init__(self, api_key: str, *, base_url: str | None = None, timeout: float | None = None) -> None:
         kwargs: dict[str, Any] = {"api_key": api_key}
@@ -214,9 +222,10 @@ class OpenAICompatibleClient:
             if delta.content:
                 think_buffer += delta.content
                 visible, think_buffer = _strip_think_blocks(think_buffer)
-                if visible:
-                    collected_content += visible
-                    yield ApiTextDeltaEvent(text=visible)
+                visible_delta = _normalize_visible_delta(visible, collected_content)
+                if visible_delta:
+                    collected_content += visible_delta
+                    yield ApiTextDeltaEvent(text=visible_delta)
             if delta.tool_calls:
                 for tc_delta in delta.tool_calls:
                     idx = tc_delta.index
@@ -239,8 +248,10 @@ class OpenAICompatibleClient:
 
         # Flush any text left in think_buffer that never matched a <think> tag.
         if think_buffer:
-            collected_content += think_buffer
-            yield ApiTextDeltaEvent(text=think_buffer)
+            visible_delta = _normalize_visible_delta(think_buffer, collected_content)
+            if visible_delta:
+                collected_content += visible_delta
+                yield ApiTextDeltaEvent(text=visible_delta)
 
         content: list[ContentBlock] = []
         if collected_content:
@@ -288,4 +299,3 @@ class OpenAICompatibleClient:
         if status == 429:
             return RateLimitFailure(message)
         return RequestFailure(message)
-

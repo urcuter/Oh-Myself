@@ -23,7 +23,7 @@ from ohmyself.engine.stream_events import (
     ToolExecutionCompleted,
     ToolExecutionStarted,
 )
-from ohmyself.permissions.checker import PermissionChecker
+from ohmyself.permissions.checker import PermissionChecker, PermissionDecision
 from ohmyself.services.tool_outputs import tool_output_inline_chars, tool_output_preview_chars
 from ohmyself.tools.base import ToolExecutionContext, ToolRegistry
 
@@ -60,6 +60,20 @@ def remember_user_goal(tool_metadata: dict[str, object] | None, prompt: str) -> 
     if tool_metadata is None:
         return
     tool_metadata["last_goal"] = " ".join(prompt.split())[:240]
+
+
+def _should_auto_allow_write_file(
+    tool_metadata: dict[str, object] | None,
+    *,
+    tool_name: str,
+    decision_reason: str,
+    requires_confirmation: bool,
+) -> bool:
+    if tool_name != "write_file" or not isinstance(tool_metadata, dict):
+        return False
+    if not bool(tool_metadata.get("auto_allow_write_file_for_plan")):
+        return False
+    return requires_confirmation or decision_reason == "Plan mode blocks mutating tools."
 
 
 def _safe_tool_artifact_name(tool_name: str) -> str:
@@ -189,6 +203,13 @@ async def _execute_tool_call(context: QueryContext, tool_name: str, tool_use_id:
         file_path=file_path,
         command=command,
     )
+    if not decision.allowed and _should_auto_allow_write_file(
+        context.tool_metadata,
+        tool_name=tool_name,
+        decision_reason=decision.reason,
+        requires_confirmation=decision.requires_confirmation,
+    ):
+        decision = PermissionDecision(True, reason="write_file auto-allowed for /plan")
     if not decision.allowed:
         if decision.requires_confirmation and context.permission_prompt is not None:
             if not await context.permission_prompt(tool_name, decision.reason):

@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from ohmyself.api.client import ApiMessageCompleteEvent
+from ohmyself.api.client import ApiMessageCompleteEvent, ApiTextDeltaEvent
 from ohmyself.api.usage import UsageSnapshot
-from ohmyself.cli import _handle_restore_command, app, run_repl
+from ohmyself.cli import _handle_plan_command, _handle_restore_command, _stream_prompt_with_ui, app, run_repl
 from ohmyself.config import load_settings
 from ohmyself.engine.messages import ConversationMessage, TextBlock
 from ohmyself.runtime import build_runtime
+from ohmyself.services import SessionTranscriptWriter
+from ohmyself.services.plan import PlanEntry
 from ohmyself.services.session_storage import save_session_snapshot
 from ohmyself.tools import create_tool_registry
 
@@ -21,6 +24,18 @@ class _StaticApiClient:
         del request
         yield ApiMessageCompleteEvent(
             message=ConversationMessage(role="assistant", content=[TextBlock(text="ready")]),
+            usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+            stop_reason=None,
+        )
+
+
+class _ChunkedApiClient:
+    async def stream_message(self, request):
+        del request
+        for chunk in ("hello ", "world"):
+            yield ApiTextDeltaEvent(text=chunk)
+        yield ApiMessageCompleteEvent(
+            message=ConversationMessage(role="assistant", content=[TextBlock(text="hello world")]),
             usage=UsageSnapshot(input_tokens=1, output_tokens=1),
             stop_reason=None,
         )
@@ -166,3 +181,47 @@ def test_run_repl_does_not_auto_restore(monkeypatch, tmp_path: Path):
     )
 
     assert called is False
+
+
+def test_stream_prompt_without_live_does_not_duplicate_completed_message(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setenv("OHMYSELF_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("ohmyself.cli.supports_live_markdown", lambda: False)
+    monkeypatch.setattr("ohmyself.cli._save_runtime_snapshot", lambda runtime: None)
+
+    async def _run():
+        runtime = await build_runtime(cwd=str(tmp_path), api_client=_ChunkedApiClient(), permission_mode="full_auto")
+        transcript = SessionTranscriptWriter(
+            session_id=runtime.session_id,
+            cwd=runtime.cwd,
+            model=runtime.current_model(),
+            started_at=runtime.session_started_at,
+        )
+        await _stream_prompt_with_ui(runtime, "say hello", transcript, decorated=True)
+
+    asyncio.run(_run())
+
+    output = capsys.readouterr().out
+
+    assert output.count("hello world") == 1
+
+
+def test_plan_content_temporarily_auto_allows_write_file(monkeypatch):
+    seen_flags: list[object] = []
+
+    async def _fake_stream(runtime, prompt, transcript):
+        del prompt, transcript
+        seen_flags.append(runtime.engine.tool_metadata.get("auto_allow_write_file_for_plan"))
+
+    monkeypatch.setattr("ohmyself.cli.append_plan", lambda content: PlanEntry("PLAN-1", Path("plan.md"), content, datetime.now().astimezone()))
+    monkeypatch.setattr("ohmyself.cli._build_plan_prompt", lambda: "organize plan")
+    monkeypatch.setattr("ohmyself.cli._stream_prompt", _fake_stream)
+    monkeypatch.setattr("ohmyself.cli.read_today_plan", lambda: ("# Daily Plan", Path("plan.md")))
+    monkeypatch.setattr("ohmyself.cli.print_context_snapshot", lambda *args, **kwargs: None)
+
+    runtime = SimpleNamespace(engine=SimpleNamespace(tool_metadata={}), active_goal_id=None)
+    transcript = _TranscriptStub()
+
+    asyncio.run(_handle_plan_command(runtime, transcript, "finish report"))
+
+    assert seen_flags == [True]
+    assert "auto_allow_write_file_for_plan" not in runtime.engine.tool_metadata

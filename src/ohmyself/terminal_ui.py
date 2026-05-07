@@ -410,6 +410,10 @@ def update_live_markdown(live: Live, text: str) -> None:
     live.update(_padded_md(text))
 
 
+def supports_live_markdown() -> bool:
+    return bool(getattr(_CONSOLE, "is_terminal", False) and getattr(sys.stdout, "isatty", lambda: False)())
+
+
 def _should_use_interactive_prompt() -> bool:
     return bool(getattr(sys.stdin, "isatty", lambda: False)() and getattr(sys.stdout, "isatty", lambda: False)())
 
