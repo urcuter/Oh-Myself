@@ -780,10 +780,20 @@ async def _handle_goal_command(
         _handle_goal_sessions_show(runtime)
         return
 
+    if cleaned == "progress":
+        if not runtime.goal_context or not runtime.goal_context.active_goal_id:
+            print_error("Not in goal mode. Use /goal progress [id] or enter a goal first.")
+            return
+        _show_goal_progress_history(runtime.goal_context.active_goal_id)
+        return
+
     if cleaned.startswith("progress "):
         parts = cleaned.split()
+        if len(parts) == 2:
+            _show_goal_progress_history(parts[1])
+            return
         if len(parts) != 3:
-            print_error("Usage: /goal progress [id] [0-100]")
+            print_error("Usage: /goal progress | /goal progress [id] | /goal progress [id] [0-100]")
             return
         try:
             entry = update_goal_progress(parts[1], int(parts[2]))
@@ -926,6 +936,26 @@ def _handle_goal_memory_show(runtime: OhMyRuntime) -> None:
             lines.append(f"\n## {label}\n\n{content}")
         else:
             lines.append(f"\n## {label}\n\n(empty)")
+    print_markdown("\n".join(lines))
+
+
+def _show_goal_progress_history(goal_id: str) -> None:
+    goals = list_goals()
+    goal = next((g for g in goals if g.entry_id == goal_id), None)
+    if goal is None:
+        print_error(f"Goal not found: {goal_id}")
+        return
+    lines: list[str] = [
+        f"# Progress History for {goal.topic}",
+        f"`{goal.entry_id}`  status={goal.status}  progress={goal.progress_percent}%",
+        "",
+        "| Date | Progress | Event | Note |",
+        "|------|----------|-------|------|",
+    ]
+    for record in sorted(goal.progress_history, key=lambda r: r.recorded_at):
+        local = record.recorded_at.astimezone()
+        date_str = local.strftime("%m-%d %H:%M")
+        lines.append(f"| {date_str} | {record.progress_percent}% | {record.event} | {record.note or '-'} |")
     print_markdown("\n".join(lines))
 
 
