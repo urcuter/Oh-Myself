@@ -164,14 +164,22 @@ class OpenAICompatibleClient:
     async def stream_message(self, request: ApiMessageRequest) -> AsyncIterator[ApiStreamEvent]:
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES + 1):
+            emitted_text = False
             try:
                 async for event in self._stream_once(request):
+                    if isinstance(event, ApiTextDeltaEvent) and event.text:
+                        emitted_text = True
                     yield event
                 return
             except OhMyApiError:
                 raise
             except Exception as exc:
                 last_error = exc
+                # Retrying after partial text output can duplicate already-rendered
+                # content in CLI streams because most providers do not support
+                # resumable token offsets.
+                if emitted_text:
+                    raise self._translate_error(exc) from exc
                 if attempt >= MAX_RETRIES or not self._is_retryable(exc):
                     raise self._translate_error(exc) from exc
                 delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
@@ -196,6 +204,8 @@ class OpenAICompatibleClient:
         if request.tools:
             params["tools"] = _convert_tools_to_openai(request.tools)
             params.pop("stream_options", None)
+        if request.effort and request.effort.strip().lower() != "none":
+            params["reasoning_effort"] = request.effort.strip().lower()
 
         collected_content = ""
         collected_reasoning = ""

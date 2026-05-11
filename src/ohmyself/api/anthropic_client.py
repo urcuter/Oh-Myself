@@ -24,7 +24,12 @@ log = logging.getLogger(__name__)  # 获取当前模块的日志记录器
 MAX_RETRIES = 3 # 定义最大重试次数
 BASE_DELAY = 1.0 # 定义基础延迟时间（秒），用于指数退避算法
 MAX_DELAY = 30.0 # 定义最大延迟时间（秒），用于限制指数退避算法的最大等待时间
-RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 529}  # 定义可重试的HTTP状态码集合，包括429（请求过多）、500（服务器错误）、502（错误网关）、503（服务不可用）和529（过载）等状态码
+EFFORT_THINKING_BUDGET: dict[str, int] = {
+    "low": 4000,
+    "medium": 8000,
+    "high": 16000,
+    "xhigh": 32000,
+}
 
 
 """
@@ -108,6 +113,10 @@ class AnthropicApiClient:
             params["system"] = request.system_prompt
         if request.tools:
             params["tools"] = request.tools
+        effort = (request.effort or "").strip().lower()
+        if effort and effort != "none":
+            budget = EFFORT_THINKING_BUDGET.get(effort, EFFORT_THINKING_BUDGET.get("medium", 8000))
+            params["thinking"] = {"type": "enabled", "budget_tokens": budget}
         try:
             async with self._client.messages.stream(**params) as stream:
                 async for event in stream:

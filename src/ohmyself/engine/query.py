@@ -45,6 +45,7 @@ class QueryContext:
     model: str
     system_prompt: str
     max_tokens: int
+    effort: str = "medium"
     permission_prompt: PermissionPrompt | None = None
     max_turns: int | None = 200
     tool_metadata: dict[str, object] | None = None
@@ -120,6 +121,7 @@ async def run_query(context: QueryContext, messages: list[ConversationMessage]) 
                     system_prompt=context.system_prompt,
                     max_tokens=context.max_tokens,
                     tools=context.tool_registry.to_api_schema(),
+                    effort=context.effort,
                 )
             ):
                 if isinstance(event, ApiTextDeltaEvent):
@@ -136,11 +138,11 @@ async def run_query(context: QueryContext, messages: list[ConversationMessage]) 
             yield ErrorEvent(message="Model stream finished without a final message"), None
             return
         if final_message.role == "assistant" and final_message.is_effectively_empty():
-            yield ErrorEvent(message="Model returned an empty assistant message."), usage
+            yield ErrorEvent(message="Model returned an empty assistant message."), usage 
             return
         messages.append(final_message)
-        yield AssistantTurnComplete(message=final_message, usage=usage), usage
-        if not final_message.tool_uses:
+        yield AssistantTurnComplete(message=final_message, usage=usage), usage # 中文：模型回复完成事件，包含模型回复的消息和使用情况统计
+        if not final_message.tool_uses: # 如果没有工具调用
             return
         tool_calls = final_message.tool_uses
         if len(tool_calls) == 1:

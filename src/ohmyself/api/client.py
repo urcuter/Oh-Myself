@@ -9,13 +9,14 @@ from ohmyself.api.usage import UsageSnapshot
 from ohmyself.engine.messages import ConversationMessage
 
 
-@dataclass(frozen=True)  # 定义一个不可变的数据类 ApiMessageRequest，包含模型名称、消息列表、系统提示、最大令牌数和工具列表等字段。
+@dataclass(frozen=True)
 class ApiMessageRequest:
     model: str
     messages: list[ConversationMessage]
     system_prompt: str | None = None
-    max_tokens: int = 4096  # 默认输出长度
+    max_tokens: int = 4096
     tools: list[dict[str, Any]] = field(default_factory=list)
+    effort: str = "medium"
 
 
 @dataclass(frozen=True)

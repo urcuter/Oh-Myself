@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from ohmyself.api.client import SupportsStreamingMessages
 from ohmyself.auth import AuthManager
-from ohmyself.config import PathRuleConfig, load_settings
+from ohmyself.config import PathRuleConfig, load_settings, save_settings
 from ohmyself.engine.messages import ConversationMessage
 from ohmyself.engine.query_engine import QueryEngine
 from ohmyself.permissions import PermissionChecker, PermissionMode
@@ -26,11 +26,13 @@ PermissionPrompt = Callable[[str, str], Awaitable[bool]]
 class OhMyRuntime:
     engine: QueryEngine
     cwd: str
+    base_cwd: str
     settings_overrides: dict[str, Any]
     session_id: str
     session_started_at: datetime
     active_goal_id: str | None = None
     goal_context: "GoalAgentContext | None" = None
+    linked_dir: str | None = None
 
     def current_settings(self):
         settings = load_settings()
@@ -41,6 +43,7 @@ class OhMyRuntime:
         settings = self.current_settings()
         profile_name, profile = settings.resolve_profile()
         self.engine.set_model(profile.resolved_model)
+        self.engine.set_effort(settings.effort)
         goal_context_prompt = ""
         if self.goal_context is not None and self.goal_context.active_goal_id is not None:
             goal_context_prompt = self.goal_context.build_goal_context_prompt()
@@ -51,6 +54,51 @@ class OhMyRuntime:
         _, profile = settings.resolve_profile()
         return profile.resolved_model
 
+    def current_base_url(self) -> str | None:
+        settings = self.current_settings()
+        _, profile = settings.resolve_profile()
+        return profile.base_url
+
+    def current_effort(self) -> str:
+        return self.current_settings().effort
+
+    def switch_model(self, model_name: str) -> str:
+        self.settings_overrides["model"] = model_name
+        self.engine.set_model(model_name)
+        settings = load_settings()
+        profile_name, _ = settings.resolve_profile()
+        auth = AuthManager(settings)
+        auth.update_profile(profile_name, model=model_name)
+        return model_name
+
+    def reconfigure(self, *, base_url: str | None = None, api_key: str | None = None, model: str | None = None, effort: str | None = None) -> str:
+        settings = load_settings()
+        profile_name, profile = settings.resolve_profile()
+        auth = AuthManager(settings)
+        changed_parts: list[str] = []
+        if base_url is not None:
+            self.settings_overrides["base_url"] = base_url
+            auth.update_profile(profile_name, base_url=base_url)
+            changed_parts.append(f"base_url={base_url}")
+        if api_key is not None:
+            auth.store_profile_credential(profile_name, api_key)
+            changed_parts.append("api_key=已配置")
+        if model is not None:
+            self.settings_overrides["model"] = model
+            auth.update_profile(profile_name, model=model)
+            self.engine.set_model(model)
+            changed_parts.append(f"model={model}")
+        if effort is not None:
+            settings_updated = load_settings().model_copy(update={"effort": effort})
+            save_settings(settings_updated)
+            self.engine.set_effort(effort)
+            changed_parts.append(f"effort={effort}")
+        if base_url is not None or api_key is not None:
+            new_settings = self.current_settings()
+            new_client = build_api_client(new_settings, api_key=api_key)
+            self.engine.set_api_client(new_client)
+        return ", ".join(changed_parts) if changed_parts else "无变更"
+
     def start_new_session(self) -> str:
         self.session_id = uuid4().hex[:12]
         self.session_started_at = datetime.now().astimezone()
@@ -60,7 +108,15 @@ class OhMyRuntime:
         self.engine.tool_metadata["subagent_runs"] = []
         self.engine.tool_metadata["subagent_semaphore"] = asyncio.Semaphore(2)
         self.engine.tool_metadata["active_goal_id"] = self.active_goal_id
+        self.engine.tool_metadata["linked_dir"] = self.linked_dir
         return self.session_id
+
+    def set_cwd(self, cwd: str, *, linked_dir: str | None = None) -> None:
+        resolved_cwd = str(Path(cwd).expanduser().resolve())
+        self.cwd = resolved_cwd
+        self.linked_dir = linked_dir
+        self.engine.set_cwd(resolved_cwd)
+        self.engine.tool_metadata["linked_dir"] = linked_dir
 
     def restore_session_snapshot(self, snapshot: dict[str, Any]) -> None:
         messages = snapshot.get("messages", [])
@@ -127,7 +183,7 @@ def _apply_settings_overrides(settings, overrides: dict[str, Any]):
     return settings.model_copy(update={"permission": permission})
 
 
-def _build_api_client(settings, *, active_profile: str | None = None, api_key: str | None = None) -> SupportsStreamingMessages:
+def build_api_client(settings, *, active_profile: str | None = None, api_key: str | None = None) -> SupportsStreamingMessages:
     from ohmyself.api.anthropic_client import AnthropicApiClient
     from ohmyself.api.openai_client import OpenAICompatibleClient
 
@@ -163,7 +219,7 @@ async def build_runtime(
     }
     settings = _apply_settings_overrides(load_settings(), overrides)
     resolved_cwd = str(Path(cwd).expanduser().resolve()) if cwd else str(Path.cwd())
-    resolved_api_client = api_client or _build_api_client(settings, active_profile=active_profile, api_key=api_key)
+    resolved_api_client = api_client or build_api_client(settings, active_profile=active_profile, api_key=api_key)
     profile_name, profile = settings.resolve_profile(active_profile)
     tool_registry = create_tool_registry()
     session_id = uuid4().hex[:12]
@@ -177,6 +233,7 @@ async def build_runtime(
         system_prompt=build_system_prompt(settings.system_prompt, cwd=resolved_cwd),
         max_tokens=settings.max_tokens,
         max_turns=settings.max_turns,
+        effort=settings.effort,
         permission_prompt=permission_prompt,
         tool_metadata={
             "session_id": session_id,
@@ -193,6 +250,7 @@ async def build_runtime(
     return OhMyRuntime(
         engine=engine,
         cwd=resolved_cwd,
+        base_cwd=resolved_cwd,
         settings_overrides=overrides,
         session_id=session_id,
         session_started_at=session_started_at,

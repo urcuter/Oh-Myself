@@ -42,6 +42,8 @@ LOCAL_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "Show local commands"),
     ("/tools", "List enabled tools"),
     ("/status", "Show active profile, model, and permission mode"),
+    ("/connect", "Configure LLM connection (base_url / api_key / model / effort)"),
+    ("/model [name]", "Show or switch the active model"),
     ("/restore [id]", "Restore a saved session; without id uses the latest one"),
     ("/sessions", "List saved sessions for this workspace"),
     ("/user_profile [prompt]", "Refresh user_profile.md from the current conversation"),
@@ -412,7 +414,15 @@ def update_live_markdown(live: Live, text: str) -> None:
 
 
 def supports_live_markdown() -> bool:
-    return bool(getattr(_CONSOLE, "is_terminal", False) and getattr(sys.stdout, "isatty", lambda: False)())
+    if not getattr(_CONSOLE, "is_terminal", False):
+        return False
+    if not getattr(sys.stdout, "isatty", lambda: False)():
+        return False
+    if getattr(_CONSOLE, "is_dumb_terminal", False):
+        return False
+    if getattr(_CONSOLE, "legacy_windows", False):
+        return False
+    return True
 
 
 def _should_use_interactive_prompt() -> bool:

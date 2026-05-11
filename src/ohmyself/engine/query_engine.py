@@ -24,6 +24,7 @@ class QueryEngine:
         system_prompt: str,
         max_tokens: int = 4096,
         max_turns: int | None = 8,
+        effort: str = "medium",
         permission_prompt: PermissionPrompt | None = None,
         tool_metadata: dict[str, object] | None = None,
     ) -> None:
@@ -35,6 +36,7 @@ class QueryEngine:
         self._system_prompt = system_prompt
         self._max_tokens = max_tokens
         self._max_turns = max_turns
+        self._effort = effort
         self._permission_prompt = permission_prompt
         self._tool_metadata = tool_metadata or {}
         self._messages: list[ConversationMessage] = []
@@ -69,6 +71,10 @@ class QueryEngine:
         return self._model
 
     @property
+    def effort(self) -> str:
+        return self._effort
+
+    @property
     def system_prompt(self) -> str:
         return self._system_prompt
 
@@ -86,6 +92,12 @@ class QueryEngine:
     def set_model(self, model: str) -> None:
         self._model = model
 
+    def set_effort(self, effort: str) -> None:
+        self._effort = effort
+
+    def set_cwd(self, cwd: str | Path) -> None:
+        self._cwd = Path(cwd).resolve()
+
     def set_api_client(self, api_client: SupportsStreamingMessages) -> None:
         self._api_client = api_client
 
@@ -94,6 +106,21 @@ class QueryEngine:
 
     def load_messages(self, messages: list[ConversationMessage]) -> None:
         self._messages = list(messages)
+
+    def repair_after_interrupt(self) -> None:
+        if not self._messages:
+            return
+        last = self._messages[-1]
+        if last.role == "assistant" and last.tool_uses:
+            blocks = [
+                ToolResultBlock(
+                    tool_use_id=tc.id,
+                    content="Generation interrupted by user.",
+                    is_error=True,
+                )
+                for tc in last.tool_uses
+            ]
+            self._messages.append(ConversationMessage(role="user", content=blocks))
 
     def has_pending_continuation(self) -> bool:
         if not self._messages:
@@ -122,6 +149,7 @@ class QueryEngine:
             system_prompt=self._system_prompt,
             max_tokens=self._max_tokens,
             max_turns=self._max_turns,
+            effort=self._effort,
             permission_prompt=self._permission_prompt,
             tool_metadata=self._tool_metadata,
         )
@@ -143,6 +171,7 @@ class QueryEngine:
             system_prompt=self._system_prompt,
             max_tokens=self._max_tokens,
             max_turns=max_turns if max_turns is not None else self._max_turns,
+            effort=self._effort,
             permission_prompt=self._permission_prompt,
             tool_metadata=self._tool_metadata,
         )

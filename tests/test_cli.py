@@ -9,10 +9,22 @@ from typer.testing import CliRunner
 
 from ohmyself.api.client import ApiMessageCompleteEvent, ApiTextDeltaEvent
 from ohmyself.api.usage import UsageSnapshot
-from ohmyself.cli import _handle_plan_command, _handle_restore_command, _stream_prompt_with_ui, app, run_repl
+from ohmyself.cli import (
+    _handle_connect_command,
+    _handle_model_command,
+    _handle_plan_command,
+    _handle_restore_command,
+    _perform_goal_exit,
+    _perform_goal_switch,
+    _stream_prompt_with_ui,
+    app,
+    run_repl,
+)
 from ohmyself.config import load_settings
 from ohmyself.engine.messages import ConversationMessage, TextBlock
 from ohmyself.runtime import build_runtime
+from ohmyself.services import append_goal
+from ohmyself.services.goal_agent import GoalAgentContext
 from ohmyself.services import SessionTranscriptWriter
 from ohmyself.services.plan import PlanEntry
 from ohmyself.services.session_storage import save_session_snapshot
@@ -225,3 +237,120 @@ def test_plan_content_temporarily_auto_allows_write_file(monkeypatch):
 
     assert seen_flags == [True]
     assert "auto_allow_write_file_for_plan" not in runtime.engine.tool_metadata
+
+
+def test_model_command_shows_current_and_default(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setenv("OHMYSELF_HOME", str(tmp_path / "home"))
+
+    async def _run():
+        runtime = await build_runtime(cwd=str(tmp_path), api_client=_StaticApiClient(), permission_mode="full_auto")
+        _handle_model_command(runtime, "")
+
+    asyncio.run(_run())
+    output = capsys.readouterr().out
+    assert "profile=openai-compatible" in output
+    assert "current=gpt-5.4" in output
+    assert "default=gpt-5.4" in output
+
+
+def test_model_command_switches_runtime_and_persists(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OHMYSELF_HOME", str(tmp_path / "home"))
+
+    async def _run():
+        runtime = await build_runtime(cwd=str(tmp_path), api_client=_StaticApiClient(), permission_mode="full_auto")
+        _handle_model_command(runtime, "gpt-5.5")
+        assert runtime.current_model() == "gpt-5.5"
+        settings = load_settings()
+        profile_name, profile = settings.resolve_profile()
+        assert profile_name == "openai-compatible"
+        assert profile.last_model == "gpt-5.5"
+        assert profile.default_model == "gpt-5.5"
+
+    asyncio.run(_run())
+
+
+def test_connect_command_requires_api_format(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setenv("OHMYSELF_HOME", str(tmp_path / "home"))
+
+    async def _run():
+        runtime = await build_runtime(cwd=str(tmp_path), api_client=_StaticApiClient(), permission_mode="full_auto")
+        _handle_connect_command(runtime, "--name p1 --base-url https://x.test --api-key sk-1 --model gpt-x")
+
+    asyncio.run(_run())
+    output = capsys.readouterr().out
+    assert "missing required option: --api-format" in output
+
+
+def test_connect_command_creates_profile_and_switches_runtime(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OHMYSELF_HOME", str(tmp_path / "home"))
+
+    async def _run():
+        runtime = await build_runtime(cwd=str(tmp_path), api_client=_StaticApiClient(), permission_mode="full_auto")
+        _handle_connect_command(
+            runtime,
+            "--name custom1 --base-url https://api.example.com/v1 --api-key sk-test --api-format openai --model gpt-5.5-mini",
+        )
+        settings = load_settings()
+        profile_name, profile = settings.resolve_profile()
+        assert profile_name == "custom1"
+        assert profile.api_format == "openai"
+        assert profile.base_url == "https://api.example.com/v1"
+        assert profile.resolved_model == "gpt-5.5-mini"
+        assert runtime.settings_overrides.get("active_profile") == "custom1"
+        assert runtime.current_model() == "gpt-5.5-mini"
+        assert runtime.engine.tool_metadata.get("active_profile") == "custom1"
+        assert runtime.engine.api_client.__class__.__name__ == "OpenAICompatibleClient"
+
+    asyncio.run(_run())
+
+
+def test_goal_switch_updates_runtime_cwd_and_exit_restores(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OHMYSELF_HOME", str(tmp_path / "home"))
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    linked = workspace / "goal-a"
+    linked.mkdir()
+
+    async def _run():
+        runtime = await build_runtime(cwd=str(workspace), api_client=_StaticApiClient(), permission_mode="full_auto")
+        runtime.goal_context = GoalAgentContext()
+        goal = append_goal("Goal A", linked_dir=str(linked))
+        transcript = _TranscriptStub()
+
+        _perform_goal_switch(runtime, transcript, goal.entry_id)
+
+        assert runtime.base_cwd == str(workspace.resolve())
+        assert runtime.cwd == str(linked.resolve())
+        assert runtime.linked_dir == str(linked.resolve())
+        assert runtime.engine.tool_metadata["linked_dir"] == str(linked.resolve())
+        assert transcript.resets[-1] == (runtime.session_id, str(linked.resolve()), runtime.current_model())
+
+        await _perform_goal_exit(runtime, transcript)
+
+        assert runtime.cwd == str(workspace.resolve())
+        assert runtime.linked_dir is None
+        assert runtime.engine.tool_metadata["linked_dir"] is None
+        assert transcript.resets[-1] == (runtime.session_id, str(workspace.resolve()), runtime.current_model())
+
+    asyncio.run(_run())
+
+
+def test_goal_switch_with_missing_linked_dir_stays_in_base_workspace(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OHMYSELF_HOME", str(tmp_path / "home"))
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    missing = workspace / "missing-goal-dir"
+
+    async def _run():
+        runtime = await build_runtime(cwd=str(workspace), api_client=_StaticApiClient(), permission_mode="full_auto")
+        runtime.goal_context = GoalAgentContext()
+        goal = append_goal("Goal A", linked_dir=str(missing))
+        transcript = _TranscriptStub()
+
+        _perform_goal_switch(runtime, transcript, goal.entry_id)
+
+        assert runtime.cwd == str(workspace.resolve())
+        assert runtime.linked_dir is None
+        assert runtime.engine.tool_metadata["linked_dir"] is None
+
+    asyncio.run(_run())

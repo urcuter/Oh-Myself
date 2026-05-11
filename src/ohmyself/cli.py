@@ -24,7 +24,7 @@ from ohmyself.engine.stream_events import (
     ToolExecutionStarted,
 )
 from ohmyself.permissions import PermissionMode
-from ohmyself.runtime import OhMyRuntime, build_runtime
+from ohmyself.runtime import OhMyRuntime, build_api_client, build_runtime
 from ohmyself.services import (
     MAX_ACTIVE_GOALS,
     SessionTranscriptWriter,
@@ -390,6 +390,130 @@ def _list_tools_data() -> list[tuple[str, str]]:
     return [(tool.name, tool.description) for tool in registry.list_tools()]
 
 
+def _handle_connect_command(runtime: OhMyRuntime, args: str) -> None:
+    if not args.strip():
+        _connect_interactive(runtime)
+        return
+    parsed = shlex.split(args)
+    opts: dict[str, str] = {}
+    i = 0
+    while i < len(parsed):
+        key = parsed[i]
+        if key.startswith("--"):
+            key = key[2:]
+            i += 1
+            if i < len(parsed) and not parsed[i].startswith("--"):
+                opts[key] = parsed[i]
+                i += 1
+            else:
+                opts[key] = ""
+        else:
+            i += 1
+    name = opts.get("name", "").strip()
+    base_url_v = opts.get("base-url", "").strip()
+    api_key_v = opts.get("api-key", "").strip()
+    api_format = opts.get("api-format", "").strip()
+    model_v = opts.get("model", "").strip()
+    effort_v = opts.get("effort", "").strip()
+    if not api_format:
+        print_error("missing required option: --api-format")
+        return
+    if not name:
+        print_error("missing required option: --name")
+        return
+    profile = ProviderProfile(
+        label=name,
+        provider=api_format,
+        api_format=api_format,
+        default_model=model_v or "gpt-5.4",
+        base_url=base_url_v if base_url_v else None,
+        last_model=model_v if model_v else None,
+    )
+    auth_mgr = AuthManager(load_settings())
+    auth_mgr.upsert_profile(name, profile)
+    if api_key_v:
+        auth_mgr.store_profile_credential(name, api_key_v)
+    auth_mgr.use_profile(name)
+    if effort_v:
+        from ohmyself.config.settings import save_settings
+        settings_updated = load_settings().model_copy(update={"effort": effort_v})
+        save_settings(settings_updated)
+    runtime.settings_overrides["active_profile"] = name
+    if model_v:
+        runtime.settings_overrides["model"] = model_v
+    new_settings = runtime.current_settings()
+    _, new_profile = new_settings.resolve_profile(name)
+    runtime.engine.set_model(new_profile.resolved_model)
+    if effort_v:
+        runtime.engine.set_effort(effort_v)
+    if new_profile.base_url or api_key_v:
+        new_client = build_api_client(new_settings, active_profile=name, api_key=(api_key_v if api_key_v else None))
+        runtime.engine.set_api_client(new_client)
+    runtime.engine.tool_metadata["active_profile"] = name
+    print_status(f"已切换到 profile: {name}")
+
+
+def _connect_interactive(runtime: OhMyRuntime) -> None:
+    cons = console()
+    settings = runtime.current_settings()
+    profile_name, profile = settings.resolve_profile(runtime.settings_overrides.get("active_profile"))
+    auth_mgr = AuthManager(settings)
+    configured = auth_mgr.get_profile_statuses()[profile_name]["configured"]
+
+    cons.print()
+    cons.print("[bold cyan]-- 配置大模型连接（直接回车保留当前值）--[/bold cyan]")
+
+    current_base_url = runtime.current_base_url()
+    cons.print(f"  Base URL [当前: {current_base_url or '(未设置)'}]:")
+    base_url_input = cons.input("  > ").strip()
+
+    current_key_status = "已配置" if configured else "(未配置)"
+    cons.print(f"  API Key [当前: {current_key_status}]:")
+    api_key_input = cons.input("  > ").strip()
+
+    current_model = runtime.current_model()
+    cons.print(f"  Model [当前: {current_model}]:")
+    model_input = cons.input("  > ").strip()
+
+    current_effort = runtime.current_effort()
+    cons.print(f"  Effort [当前: {current_effort}]  可选: none / low / medium / high / xhigh:")
+    effort_input = cons.input("  > ").strip()
+
+    changed = runtime.reconfigure(
+        base_url=base_url_input if base_url_input else None,
+        api_key=api_key_input if api_key_input else None,
+        model=model_input if model_input else None,
+        effort=effort_input if effort_input else None,
+    )
+    cons.print()
+    if changed != "无变更":
+        new_settings = runtime.current_settings()
+        _, new_profile = new_settings.resolve_profile()
+        new_configured = AuthManager(new_settings).get_profile_statuses()[profile_name]["configured"]
+        cons.print("[bold green]✓ 配置完成！[/bold green]")
+        cons.print(f"  Base URL:  {new_profile.base_url or '(未设置)'}")
+        cons.print(f"  Model:     {new_profile.resolved_model}")
+        cons.print(f"  Effort:    {new_settings.effort}")
+        cons.print(f"  API Key:   {'已配置 ✓' if new_configured else '(未配置)'}")
+    else:
+        cons.print("[dim]  配置无变更[/dim]")
+    cons.print()
+
+
+def _handle_model_command(runtime: OhMyRuntime, args: str) -> None:
+    if not args.strip():
+        settings = runtime.current_settings()
+        profile_name, profile = settings.resolve_profile(runtime.settings_overrides.get("active_profile"))
+        cons = console()
+        cons.print(f"profile={profile_name}")
+        cons.print(f"current={profile.resolved_model}")
+        cons.print(f"default={profile.default_model}")
+        return
+    model_name = args.strip()
+    runtime.switch_model(model_name)
+    print_status(f"已切换到模型: {model_name}")
+
+
 def _runtime_status_rows(runtime: OhMyRuntime) -> list[tuple[str, str]]:
     settings = runtime.current_settings()
     profile_name, profile = settings.resolve_profile(runtime.settings_overrides.get("active_profile"))
@@ -405,6 +529,8 @@ def _runtime_status_rows(runtime: OhMyRuntime) -> list[tuple[str, str]]:
         ("profile", profile_name),
         ("provider", profile.provider),
         ("model", profile.resolved_model),
+        ("effort", settings.effort),
+        ("base_url", profile.base_url or "(none)"),
         ("auth", str(configured)),
         ("permission", settings.permission.mode),
         ("tools", str(len(_list_tools_data()))),
@@ -848,8 +974,15 @@ async def _handle_goal_command(
         return
 
     try:
-        topic, description, ends_at, progress_percent = _parse_goal_add_arguments(cleaned)
-        entry = append_goal(topic, description=description, ends_at=ends_at, progress_percent=progress_percent)
+        topic, description, ends_at, progress_percent, linked_dir = _parse_goal_add_arguments(cleaned)
+        normalized_linked_dir = _normalize_goal_linked_dir(linked_dir, base_cwd=_runtime_base_cwd(runtime))
+        entry = append_goal(
+            topic,
+            description=description,
+            ends_at=ends_at,
+            progress_percent=progress_percent,
+            linked_dir=normalized_linked_dir,
+        )
     except Exception as exc:
         print_error(f"Failed to add goal: {exc}")
         transcript.record_status("Goal", f"Failed to add goal: {exc}")
@@ -878,6 +1011,8 @@ def _perform_goal_switch(runtime: OhMyRuntime, transcript: SessionTranscriptWrit
     if goal is None:
         print_error(f"Goal not found: {goal_id}. Use /goal to list active goals.")
         return
+    target_cwd, active_linked_dir, cwd_warning = _resolve_goal_runtime_cwd(runtime, goal.linked_dir)
+    runtime.set_cwd(target_cwd, linked_dir=active_linked_dir)
     _save_runtime_snapshot(runtime)
     runtime.active_goal_id = goal_id
     runtime.engine.tool_metadata["active_goal_id"] = goal_id
@@ -888,7 +1023,9 @@ def _perform_goal_switch(runtime: OhMyRuntime, transcript: SessionTranscriptWrit
     runtime.refresh_system_prompt()
     _save_runtime_snapshot(runtime)
     print_goal_switch_feedback(goal.topic)
-    transcript.record_status("Goal", f"Switched to {goal.entry_id} ({goal.topic})")
+    if cwd_warning:
+        print_status(cwd_warning)
+    transcript.record_status("Goal", f"Switched to {goal.entry_id} ({goal.topic}) cwd={runtime.cwd}")
 
 
 async def _perform_goal_exit(runtime: OhMyRuntime, transcript: SessionTranscriptWriter) -> None:
@@ -902,6 +1039,7 @@ async def _perform_goal_exit(runtime: OhMyRuntime, transcript: SessionTranscript
     _save_runtime_snapshot(runtime)
     runtime.goal_context.exit_goal()
     runtime.active_goal_id = None
+    runtime.set_cwd(_runtime_base_cwd(runtime), linked_dir=None)
     runtime.engine.clear()
     runtime.start_new_session()
     runtime.engine.tool_metadata["active_goal_id"] = None
@@ -1091,13 +1229,14 @@ async def _handle_goal_memory_search(
     print_markdown(result.output)
 
 
-def _parse_goal_add_arguments(raw: str) -> tuple[str, str, date | None, int]:
-    tokens = shlex.split(raw)
+def _parse_goal_add_arguments(raw: str) -> tuple[str, str, date | None, int, str | None]:
+    tokens = [_strip_matching_quotes(token) for token in shlex.split(raw, posix=False)]
     args = tokens[1:] if tokens and tokens[0] == "add" else tokens
     topic_parts: list[str] = []
     description = ""
     ends_at: date | None = None
     progress_percent = 0
+    linked_dir: str | None = None
     index = 0
     while index < len(args):
         item = args[index]
@@ -1116,6 +1255,11 @@ def _parse_goal_add_arguments(raw: str) -> tuple[str, str, date | None, int]:
             if index >= len(args):
                 raise ValueError("missing value for --desc")
             description = args[index].strip()
+        elif item == "--dir":
+            index += 1
+            if index >= len(args):
+                raise ValueError("missing value for --dir")
+            linked_dir = args[index].strip() or None
         else:
             topic_parts.append(item)
         index += 1
@@ -1132,7 +1276,37 @@ def _parse_goal_add_arguments(raw: str) -> tuple[str, str, date | None, int]:
                     topic = left
                     description = right
                     break
-    return topic, description, ends_at, progress_percent
+    return topic, description, ends_at, progress_percent, linked_dir
+
+
+def _runtime_base_cwd(runtime: OhMyRuntime) -> str:
+    return str(Path(getattr(runtime, "base_cwd", runtime.cwd)).expanduser().resolve())
+
+
+def _normalize_goal_linked_dir(linked_dir: str | None, *, base_cwd: str) -> str | None:
+    if not linked_dir:
+        return None
+    path = Path(linked_dir).expanduser()
+    if not path.is_absolute():
+        path = Path(base_cwd) / path
+    return str(path.resolve())
+
+
+def _resolve_goal_runtime_cwd(runtime: OhMyRuntime, linked_dir: str | None) -> tuple[str, str | None, str | None]:
+    base_cwd = _runtime_base_cwd(runtime)
+    normalized_linked_dir = _normalize_goal_linked_dir(linked_dir, base_cwd=base_cwd)
+    if not normalized_linked_dir:
+        return base_cwd, None, None
+    path = Path(normalized_linked_dir)
+    if path.exists() and path.is_dir():
+        return str(path), str(path), None
+    return base_cwd, None, f"Goal linked_dir is unavailable, staying in workspace: {normalized_linked_dir}"
+
+
+def _strip_matching_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
 
 
 @auth_app.command("login")
@@ -1251,7 +1425,7 @@ def status_command() -> None:
 async def _maybe_daily_progress_update(runtime: OhMyRuntime) -> None:
     from datetime import date, timedelta
 
-    from ohmyself.services.plan import get_plan_path
+    from ohmyself.services.plan import get_plan_path, read_text_file_robust
 
     today = date.today()
     last_check = get_last_progress_check_date()
@@ -1263,7 +1437,7 @@ async def _maybe_daily_progress_update(runtime: OhMyRuntime) -> None:
     if not plan_path.exists():
         set_last_progress_check_date(today)
         return
-    plan_content = plan_path.read_text(encoding="utf-8", errors="replace")
+    plan_content = read_text_file_robust(plan_path)
     if not plan_content.strip():
         set_last_progress_check_date(today)
         return
@@ -1385,6 +1559,12 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         if stripped == "/tools":
             print_tools_panel(_list_tools_data())
             continue
+        if stripped == "/connect" or stripped.startswith("/connect "):
+            _handle_connect_command(runtime, stripped[len("/connect") :].strip())
+            continue
+        if stripped == "/model" or stripped.startswith("/model "):
+            _handle_model_command(runtime, stripped[len("/model") :].strip())
+            continue
         if stripped == "/status":
             print_status_panel(_runtime_status_rows(runtime))
             continue
@@ -1450,6 +1630,12 @@ async def _handle_goal_cycle(runtime: OhMyRuntime, transcript: SessionTranscript
             message_count=len(runtime.engine.messages),
         )
         goal_context.active_goal_id = saved_active
+    active_goal = goal_context.active_goal() if new_goal_id else None
+    target_cwd, active_linked_dir, cwd_warning = _resolve_goal_runtime_cwd(
+        runtime,
+        active_goal.linked_dir if active_goal is not None else None,
+    )
+    runtime.set_cwd(target_cwd, linked_dir=active_linked_dir)
     runtime.engine.clear()
     runtime.start_new_session()
     runtime.engine.tool_metadata["active_goal_id"] = new_goal_id
@@ -1457,11 +1643,12 @@ async def _handle_goal_cycle(runtime: OhMyRuntime, transcript: SessionTranscript
     runtime.refresh_system_prompt()
     _save_runtime_snapshot(runtime)
     if new_goal_id:
-        active = goal_context.active_goal()
-        topic = active.topic if active else ""
+        topic = active_goal.topic if active_goal else ""
         print_goal_switch_feedback(topic)
     else:
         print_goal_switch_feedback(None)
+    if cwd_warning:
+        print_status(cwd_warning)
 
 
 async def run_print_mode(*, prompt: str, cwd: str, model: str | None, max_turns: int | None, base_url: str | None, system_prompt: str | None, api_key: str | None, api_format: str | None, permission_mode: str | None, active_profile: str | None) -> None:
