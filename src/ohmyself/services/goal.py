@@ -47,6 +47,7 @@ class GoalEntry:
     updated_at: datetime
     progress_history: tuple[GoalProgressRecord, ...]
     closed_at: datetime | None = None
+    linked_dir: str | None = None
 
 
 def get_goal_dir() -> Path:
@@ -85,6 +86,7 @@ def append_goal(
     description: str = "",
     ends_at: date | str | None = None,
     progress_percent: int = 0,
+    linked_dir: str | None = None,
     now: datetime | None = None,
     max_active_goals: int = MAX_ACTIVE_GOALS,
 ) -> GoalEntry:
@@ -123,6 +125,7 @@ def append_goal(
             ),
         ),
         closed_at=closed_at,
+        linked_dir=linked_dir,
     )
     ensure_goal_dir(entry_id)
     goals.append(entry)
@@ -200,10 +203,17 @@ def stop_goal(entry_id: str, *, now: datetime | None = None) -> GoalEntry:
     return _update_goal(entry_id, update)
 
 
+def set_goal_linked_dir(entry_id: str, linked_dir: str | None) -> GoalEntry:
+    def update(goal: GoalEntry) -> GoalEntry:
+        return _replace_goal(goal, linked_dir=linked_dir, updated_at=datetime.now().astimezone())
+
+    return _update_goal(entry_id, update)
+
+
 def format_goals_markdown(goals: list[GoalEntry] | None = None) -> str:
     entries = goals if goals is not None else list_goals()
     if not entries:
-        return "No goals yet. Use `/goal [topic] --desc \"...\" --ends YYYY-MM-DD` to create one."
+        return "No goals yet. Use `/goal [topic] --desc \"...\" --ends YYYY-MM-DD --dir <path>` to create one."
 
     groups = [
         ("Active Goals", [goal for goal in entries if goal.status == "active"]),
@@ -220,6 +230,8 @@ def format_goals_markdown(goals: list[GoalEntry] | None = None) -> str:
             lines.append(f"  {goal.topic}")
             if goal.description:
                 lines.append(f"  {goal.description}")
+            if goal.linked_dir:
+                lines.append(f"  linked_dir: {goal.linked_dir}")
     return "\n".join(lines)
 
 
@@ -252,6 +264,7 @@ def _replace_goal(goal: GoalEntry, **updates: object) -> GoalEntry:
         "updated_at": goal.updated_at,
         "progress_history": goal.progress_history,
         "closed_at": goal.closed_at,
+        "linked_dir": goal.linked_dir,
     }
     values.update(updates)
     return GoalEntry(**values)  # type: ignore[arg-type]
@@ -271,7 +284,7 @@ def _write_goals(goals: list[GoalEntry]) -> None:
 
 
 def _goal_to_payload(goal: GoalEntry) -> dict[str, Any]:
-    return {
+    payload = {
         "entry_id": goal.entry_id,
         "topic": goal.topic,
         "description": goal.description,
@@ -283,6 +296,9 @@ def _goal_to_payload(goal: GoalEntry) -> dict[str, Any]:
         "progress_history": [_progress_record_to_payload(record) for record in goal.progress_history],
         "closed_at": goal.closed_at.isoformat(timespec="seconds") if goal.closed_at else None,
     }
+    if goal.linked_dir:
+        payload["linked_dir"] = goal.linked_dir
+    return payload
 
 
 def _goal_from_payload(payload: dict[str, Any]) -> GoalEntry:
@@ -315,6 +331,7 @@ def _goal_from_payload(payload: dict[str, Any]) -> GoalEntry:
             fallback_recorded_at=updated_at or created_at,
         ),
         closed_at=_normalize_datetime(payload.get("closed_at")),
+        linked_dir=payload.get("linked_dir") or None,
     )
 
 

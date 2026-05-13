@@ -63,6 +63,13 @@ def _format_environment_section(env: EnvironmentInfo) -> str:
         if env.git_branch:
             git_line += f" (branch: {env.git_branch})"
         lines.append(git_line)
+    if env.os_name == "Windows":
+        lines.append("")
+        lines.append(
+            "# IMPORTANT: On Windows, the bash tool runs PowerShell. "
+            "PowerShell commands (Set-Content, Out-File, Add-Content) default to UTF-16LE encoding. "
+            "Always use the write_file tool (UTF-8) instead of bash to create or edit text files.",
+        )
     return "\n".join(lines)
 
 

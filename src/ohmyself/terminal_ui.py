@@ -61,6 +61,7 @@ LOCAL_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/goal done [id]", "Mark a goal completed"),
     ("/goal stop [id]", "Stop a goal"),
     ("/plan [content]", "Show today's organized plan, or add content and auto-organize it"),
+    ("/schedule", "Manage scheduled tasks (os add / list / remove / shutdown / cancel)"),
     ("/clear", "Clear in-memory conversation history"),
     ("/continue", "Continue a paused tool loop"),
     ("/exit", "Exit Oh Myself"),
@@ -270,6 +271,53 @@ def prompt_goal_memory_update() -> bool:
         console=_CONSOLE,
         default=True,
     )
+
+def print_model_panel(
+    profile_name: str,
+    profile_label: str,
+    current_model: str,
+    default_model: str,
+    model_history: list[str],
+    other_profiles: list[tuple[str, str, str]],
+) -> None:
+    table = Table(box=None, show_header=False, expand=True, padding=(0, 1))
+    table.add_column(style=MUTED, no_wrap=True, width=14)
+    table.add_column(style="default")
+    table.add_row("Profile", f"{profile_label}  ({profile_name})")
+    table.add_row("Current", f"[bold {ACCENT}]{current_model}[/]")
+    table.add_row("Default", default_model)
+    has_history = bool(model_history)
+    has_other = bool(other_profiles)
+    if has_history or has_other:
+        table.add_row("", "")
+    if has_history:
+        table.add_row("History", f"[{MUTED}]近期使用[/]")
+        for m in model_history:
+            highlight = f"[bold {SUCCESS}]" if m == current_model else ""
+            end = f"[/]" if m == current_model else ""
+            table.add_row("", f"  {highlight}{m}{end}")
+    if has_other:
+        table.add_row("", "")
+        table.add_row("Profiles", f"[{MUTED}]已注册的 Profile[/]")
+        for pn, pl, pm in other_profiles:
+            highlight = f"[bold {SUCCESS}]" if pn == profile_name else ""
+            end = f"[/]" if pn == profile_name else ""
+            table.add_row("", f"  {highlight}{pl}{end}  [{MUTED}]{pm}[/]")
+    if not has_history and not has_other:
+        table.add_row("", "")
+        table.add_row("", f"[{MUTED}]暂无记录，使用 /model <模型名> 开始切换[/]")
+    table.add_row("", "")
+    table.add_row("Usage", "/model <name>  切换模型或 Profile")
+    _CONSOLE.print(
+        Panel(
+            table,
+            title=Text("Model", style=f"bold {ACCENT}"),
+            title_align="left",
+            border_style=BORDER,
+            box=box.ROUNDED,
+        )
+    )
+
 
 def print_help_panel() -> None:
     table = Table(box=None, show_header=False, expand=True, padding=(0, 1))

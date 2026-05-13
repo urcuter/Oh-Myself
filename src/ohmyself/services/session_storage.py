@@ -62,6 +62,35 @@ def load_latest_session_snapshot(cwd: str | Path) -> dict[str, Any] | None:
     return _normalize_snapshot_payload(json.loads(path.read_text(encoding="utf-8")))
 
 
+def load_session_snapshot_by_id(cwd: str | Path, session_id: str) -> dict[str, Any] | None:
+    path = get_project_session_dir(cwd) / f"session-{session_id}.json"
+    if not path.exists():
+        return None
+    try:
+        return _normalize_snapshot_payload(json.loads(path.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def list_project_sessions(cwd: str | Path) -> list[dict[str, Any]]:
+    session_dir = get_project_session_dir(cwd)
+    sessions: list[dict[str, Any]] = []
+    for path in sorted(session_dir.glob("session-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        sessions.append({
+            "session_id": data.get("session_id", path.stem.replace("session-", "")),
+            "summary": data.get("summary", ""),
+            "model": data.get("model", ""),
+            "message_count": data.get("message_count", 0),
+            "session_started_at": data.get("session_started_at", ""),
+            "updated_at": data.get("updated_at"),
+        })
+    return sessions
+
+
 def _normalize_snapshot_payload(payload: dict[str, Any]) -> dict[str, Any]:
     messages = payload.get("messages", [])
     if isinstance(messages, list):

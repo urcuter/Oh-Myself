@@ -37,7 +37,8 @@ def get_environment_info(*, cwd: str | None = None) -> EnvironmentInfo:
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 cwd=resolved_cwd,
                 stderr=subprocess.DEVNULL,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
             ).strip()
         except Exception:
             git_branch = ""

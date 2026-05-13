@@ -159,18 +159,32 @@ def test_format_goals_markdown_groups_by_status(tmp_path: Path, monkeypatch: pyt
 
 
 def test_parse_goal_add_arguments_accepts_options():
-    topic, description, ends_at, progress = _parse_goal_add_arguments('毕业论文 --desc "日常跟进组会，每周读一篇论文" --ends 2026-06-01 --progress 30')
+    topic, description, ends_at, progress, linked_dir = _parse_goal_add_arguments('毕业论文 --desc "日常跟进组会，每周读一篇论文" --ends 2026-06-01 --progress 30')
 
     assert topic == "毕业论文"
     assert description == "日常跟进组会，每周读一篇论文"
     assert ends_at == date(2026, 6, 1)
     assert progress == 30
+    assert linked_dir is None
 
 
 def test_parse_goal_add_arguments_accepts_inline_description():
-    topic, description, ends_at, progress = _parse_goal_add_arguments("强化学习：每周读一篇论文")
+    topic, description, ends_at, progress, linked_dir = _parse_goal_add_arguments("强化学习：每周读一篇论文")
 
     assert topic == "强化学习"
     assert description == "每周读一篇论文"
     assert ends_at is None
     assert progress == 0
+    assert linked_dir is None
+
+
+def test_parse_goal_add_arguments_accepts_linked_dir():
+    topic, description, ends_at, progress, linked_dir = _parse_goal_add_arguments(
+        'Ship feature --desc "Finish CLI flow" --dir .\\workspace'
+    )
+
+    assert topic == "Ship feature"
+    assert description == "Finish CLI flow"
+    assert ends_at is None
+    assert progress == 0
+    assert linked_dir == ".\\workspace"

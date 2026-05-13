@@ -153,6 +153,8 @@ def test_run_repl_does_not_auto_restore(monkeypatch, tmp_path: Path):
             self.session_id = "sess-new"
             self.session_started_at = datetime.now().astimezone()
             self.settings_overrides = {}
+            self.engine = SimpleNamespace(tool_metadata={})
+            self.goal_context = None
 
         def current_settings(self):
             return _FakeSettings()
@@ -248,9 +250,9 @@ def test_model_command_shows_current_and_default(tmp_path: Path, monkeypatch, ca
 
     asyncio.run(_run())
     output = capsys.readouterr().out
-    assert "profile=openai-compatible" in output
-    assert "current=gpt-5.4" in output
-    assert "default=gpt-5.4" in output
+    assert "openai-compatible" in output
+    assert "gpt-5.4" in output
+    assert "Usage" in output
 
 
 def test_model_command_switches_runtime_and_persists(tmp_path: Path, monkeypatch):
@@ -265,6 +267,22 @@ def test_model_command_switches_runtime_and_persists(tmp_path: Path, monkeypatch
         assert profile_name == "openai-compatible"
         assert profile.last_model == "gpt-5.5"
         assert profile.default_model == "gpt-5.5"
+        assert "gpt-5.5" in profile.model_history
+
+    asyncio.run(_run())
+
+
+def test_model_command_adds_to_history_and_deduplicates(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OHMYSELF_HOME", str(tmp_path / "home"))
+
+    async def _run():
+        runtime = await build_runtime(cwd=str(tmp_path), api_client=_StaticApiClient(), permission_mode="full_auto")
+        _handle_model_command(runtime, "gpt-5.5")
+        _handle_model_command(runtime, "gpt-4.1")
+        _handle_model_command(runtime, "gpt-5.5")
+        settings = load_settings()
+        _, profile = settings.resolve_profile()
+        assert profile.model_history == ["gpt-5.5", "gpt-4.1"]
 
     asyncio.run(_run())
 

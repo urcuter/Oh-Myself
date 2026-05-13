@@ -1,10 +1,40 @@
 from __future__ import annotations
 
+import locale
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from ohmyself.tools.base import BaseTool, ToolExecutionContext, ToolResult
+
+
+def decode_text_file(raw: bytes) -> str:
+    if not raw:
+        return ""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16", errors="replace")
+    if raw[:3] == b"\xef\xbb\xbf":
+        return raw.decode("utf-8-sig", errors="replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        encoding = locale.getpreferredencoding(False)
+        if encoding.lower() not in ("utf-8", "utf8"):
+            try:
+                return raw.decode(encoding, errors="replace")
+            except (UnicodeDecodeError, LookupError):
+                pass
+        return raw.decode("utf-8", errors="replace")
+
+
+def _looks_like_binary(raw: bytes) -> bool:
+    if not raw:
+        return False
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff") or raw[:3] == b"\xef\xbb\xbf":
+        return False
+    if b"\x00" in raw:
+        return True
+    return False
 
 
 class FileReadToolInput(BaseModel):
@@ -29,9 +59,9 @@ class FileReadTool(BaseTool):
         if path.is_dir():
             return ToolResult(output=f"Cannot read directory: {path}", is_error=True)
         raw = path.read_bytes()
-        if b"\x00" in raw:
+        if _looks_like_binary(raw):
             return ToolResult(output=f"Binary file cannot be read as text: {path}", is_error=True)
-        lines = raw.decode("utf-8", errors="replace").splitlines()
+        lines = decode_text_file(raw).splitlines()
         selected = lines[arguments.offset : arguments.offset + arguments.limit]
         numbered = [f"{arguments.offset + index + 1:>6}\t{line}" for index, line in enumerate(selected)]
         if not numbered:

@@ -10,11 +10,19 @@ def resolve_tool_path(base: Path, candidate: str) -> Path:
     return path.resolve()
 
 
-def resolve_workspace_path(base: Path, candidate: str) -> Path:
+def resolve_workspace_path(base: Path, candidate: str, extra_roots: list[Path] | None = None) -> Path:
     workspace = base.resolve()
     path = resolve_tool_path(workspace, candidate)
     try:
         path.relative_to(workspace)
-    except ValueError as exc:
-        raise ValueError(f"Path is outside the workspace: {path}") from exc
-    return path
+        return path
+    except ValueError:
+        pass
+    if extra_roots:
+        for root in extra_roots:
+            try:
+                path.relative_to(root.resolve())
+                return path
+            except ValueError:
+                pass
+    raise ValueError(f"Path is outside the workspace: {path}")

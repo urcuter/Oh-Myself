@@ -31,6 +31,7 @@ class ProviderProfile(BaseModel):
     default_model: str
     base_url: str | None = None
     last_model: str | None = None
+    model_history: list[str] = Field(default_factory=list)
 
     @property
     def resolved_model(self) -> str:

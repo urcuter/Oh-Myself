@@ -10,6 +10,7 @@ from ohmyself.terminal_ui import (
     print_help_panel,
     print_status,
     print_success,
+    supports_live_markdown,
 )
 
 
@@ -70,9 +71,47 @@ def test_slash_command_completer_suggests_local_commands():
 def test_slash_command_completer_suggests_plan_topics():
     completer = _SlashCommandCompleter(
         (("/plan [content]", "Show or add plan"),),
-        plan_topics=("强化学习", "毕业论文"),
+        plan_topics=("Reinforcement Learning", "Thesis"),
     )
 
-    completions = list(completer.get_completions(Document("/plan 强"), None))
+    completions = list(completer.get_completions(Document("/plan R"), None))
 
-    assert any(item.text == "/plan 强化学习：" for item in completions)
+    assert any(item.text == "/plan Reinforcement Learning：" for item in completions)
+
+
+def test_supports_live_markdown_disabled_on_legacy_windows(monkeypatch):
+    import ohmyself.terminal_ui as terminal_ui
+
+    class _FakeConsole:
+        is_terminal = True
+        is_dumb_terminal = False
+        legacy_windows = True
+
+    class _FakeStdout:
+        @staticmethod
+        def isatty() -> bool:
+            return True
+
+    monkeypatch.setattr(terminal_ui, "_CONSOLE", _FakeConsole())
+    monkeypatch.setattr(terminal_ui.sys, "stdout", _FakeStdout())
+
+    assert supports_live_markdown() is False
+
+
+def test_supports_live_markdown_enabled_for_regular_tty(monkeypatch):
+    import ohmyself.terminal_ui as terminal_ui
+
+    class _FakeConsole:
+        is_terminal = True
+        is_dumb_terminal = False
+        legacy_windows = False
+
+    class _FakeStdout:
+        @staticmethod
+        def isatty() -> bool:
+            return True
+
+    monkeypatch.setattr(terminal_ui, "_CONSOLE", _FakeConsole())
+    monkeypatch.setattr(terminal_ui.sys, "stdout", _FakeStdout())
+
+    assert supports_live_markdown() is True

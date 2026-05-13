@@ -12,9 +12,12 @@ def resolve_shell_command(command: str) -> list[str]:
     if os.name == "nt":
         for executable in (shutil.which("pwsh"), shutil.which("powershell")):
             if executable and _shell_is_available(executable, "-NoLogo", "-NoProfile", "-Command", "exit 0"):
+                if "pwsh" not in Path(executable).name.lower():
+                    command = f"$OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8; {command}"
                 return [executable, "-NoLogo", "-NoProfile", "-Command", command]
         cmd = shutil.which("cmd.exe") or "cmd.exe"
         if _shell_is_available(cmd, "/d", "/s", "/c", "exit 0"):
+            command = f"chcp 65001 >NUL && ({command})"
             return [cmd, "/d", "/s", "/c", command]
         bash = shutil.which("bash")
         if bash and _shell_is_available(bash, "-lc", "true"):
@@ -43,6 +46,13 @@ def _shell_is_available(executable: str, *probe_args: str) -> bool:
     return completed.returncode == 0
 
 
+def _get_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 async def create_shell_subprocess(
     command: str,
     *,
@@ -58,4 +68,5 @@ async def create_shell_subprocess(
         stdin=stdin,
         stdout=stdout,
         stderr=stderr,
+        env=_get_subprocess_env(),
     )

@@ -15,16 +15,22 @@ USER_PREFS_FILENAME = "user_prefs.md"
 CONTEXT_FILENAME = "context.md"
 
 _UPDATE_SYSTEM_PROMPT = """\
-You update the long-term memory for a specific goal that the user is working on.
+You maintain the long-term memory for a goal the user is working on.
 
-Write concise markdown updates for the goal's memory files.
+Analyze the conversation below (which includes tool calls and their results) and produce concise markdown updates for three memory files.
 
-Rules:
-- Use only evidence from the conversation and the existing memory content.
-- Extract: key progress, decisions made, lessons learned, user preferences, and important context.
-- Preserve stable information; do not remove existing content unless it is contradicted by new evidence.
-- Keep entries concise with clear headings and bullet points.
-- Only write content that the conversation supports — do not invent or speculate.
+What to extract:
+- AI Notes: progress achieved, decisions made, lessons learned, what was built/fixed.
+- User Preferences: working style, constraints, preferred tools/formats, explicit feedback.
+- Context: project state, file locations, dependencies, important facts, next steps.
+
+Guidelines:
+- Tool calls and results are the PRIMARY evidence of what actually happened — use them.
+- Even brief exchanges reveal useful information; infer reasonable conclusions.
+- Keep entries concise (bullet points preferred).
+- Write ONLY new content to append, not the full history.
+- If genuinely nothing new is revealed, write "NONE" for that section.
+- Write in the same language the user uses.
 """
 
 AI_NOTES_FILENAME = "ai_notes.md"
@@ -52,7 +58,7 @@ def read_goal_memory(goal_id: str, filename: str) -> str:
     if not path.exists():
         return ""
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return path.read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
         return ""
 
@@ -66,7 +72,7 @@ def append_goal_memory(goal_id: str, filename: str, content: str) -> None:
     existing = ""
     if path.exists():
         try:
-            existing = path.read_text(encoding="utf-8").strip()
+            existing = path.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             pass
     separator = "\n\n" if existing else ""
@@ -120,12 +126,46 @@ def get_goal_session_dir(goal_id: str) -> Path:
 
 
 def _conversation_to_text(messages: list[ConversationMessage]) -> str:
+    from ohmyself.engine.messages import ToolResultBlock, ToolUseBlock
+
     lines: list[str] = []
     for message in messages:
+        parts: list[str] = []
         text = message.text.strip()
         if text:
-            lines.append(f"{message.role}: {text}")
+            parts.append(text)
+        for block in message.content:
+            if isinstance(block, ToolUseBlock):
+                input_str = _format_dict(block.input)
+                parts.append(f"[调用工具: {block.name}({input_str})]")
+            elif isinstance(block, ToolResultBlock):
+                result = block.content
+                if len(result) > 400:
+                    result = result[:400] + "..."
+                parts.append(f"[工具结果: {result}]")
+        if parts:
+            lines.append(f"{message.role}: {' | '.join(parts)}")
     return "\n\n".join(lines)
+
+
+def _format_dict(d: dict) -> str:
+    import json
+    try:
+        text = json.dumps(d, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = str(d)
+    if len(text) > 200:
+        text = text[:200] + "..."
+    return text
+
+
+def _parse_memory_sections(result_text: str) -> list[str]:
+    import re
+    text = result_text.strip()
+    code_match = re.search(r"```(?:json|markdown|md)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
+    if code_match:
+        text = code_match.group(1).strip()
+    return [s.strip() for s in text.split("---")]
 
 
 async def update_goal_memory_via_ai(
@@ -193,7 +233,7 @@ async def update_goal_memory_via_ai(
     if not result_text:
         raise RuntimeError("Model returned empty memory update.")
 
-    sections = result_text.split("---")
+    sections = _parse_memory_sections(result_text)
     updates: dict[str, str] = {}
 
     section_files = [AI_NOTES_FILENAME, USER_PREFS_FILENAME, CONTEXT_FILENAME]

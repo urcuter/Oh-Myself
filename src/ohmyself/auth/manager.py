@@ -71,6 +71,15 @@ class AuthManager:
         self._settings = self.settings.model_copy(update={"profiles": profiles})
         self.save_settings()
 
+    def update_profile_history(self, name: str, history: list[str]) -> None:
+        profiles = self.list_profiles()
+        if name not in profiles:
+            raise ValueError(f"Unknown provider profile: {name!r}")
+        current = profiles[name]
+        profiles[name] = current.model_copy(update={"model_history": history})
+        self._settings = self.settings.model_copy(update={"profiles": profiles})
+        self.save_settings()
+
     def remove_profile(self, name: str) -> None:
         profiles = self.list_profiles()
         if name not in profiles:

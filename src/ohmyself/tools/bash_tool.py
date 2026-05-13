@@ -15,14 +15,18 @@ _READ_REMAINING_OUTPUT_TIMEOUT_SECONDS = 2.0
 
 
 class BashToolInput(BaseModel):
-    command: str = Field(description="Shell command to execute")
+    command: str = Field(description="Shell command to execute")  
     cwd: str | None = Field(default=None, description="Working directory override")
-    timeout_seconds: int = Field(default=600, ge=1, le=600)
+    timeout_seconds: int = Field(default=600, ge=1, le=600)  # ge: greater than or equal to, le: less than or equal to
 
 
 class BashTool(BaseTool):
     name = "bash"
-    description = "Run a shell command in the local repository."
+    description = (
+        "Run a shell command in the local repository. "
+        "On Windows this uses PowerShell. "
+        "Prefer write_file for creating/editing text files to avoid encoding issues."
+    )
     input_model = BashToolInput
 
     def is_read_only(self, arguments: BashToolInput) -> bool:
@@ -33,12 +37,12 @@ class BashTool(BaseTool):
         preflight_error = _preflight_interactive_command(arguments.command)
         if preflight_error is not None:
             return ToolResult(output=preflight_error, is_error=True, metadata={"interactive_required": True})
-        process = await create_shell_subprocess(
+        process = await create_shell_subprocess( # 创建一个子进程来执行shell命令，返回一个Process对象
             arguments.command,
             cwd=cwd,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.DEVNULL,  # 不提供标准输入，防止命令等待输入导致挂起
+            stdout=asyncio.subprocess.PIPE,  # 将标准输出重定向到管道，以便我们可以异步读取输出
+            stderr=asyncio.subprocess.STDOUT, # 将标准错误重定向到标准输出，这样我们只需要读取一个流就能获取所有输出
         )
         try:
             await asyncio.wait_for(process.wait(), timeout=arguments.timeout_seconds)
@@ -169,7 +173,7 @@ def _looks_like_read_only_command(command: str) -> bool:
     if any(marker in command for marker in ("&&", "||", ";", "|", ">", "<")):
         return False
     try:
-        tokens = shlex.split(command, posix=False)
+        tokens = shlex.split(command, posix=False)  
     except ValueError:
         return False
     if not tokens:

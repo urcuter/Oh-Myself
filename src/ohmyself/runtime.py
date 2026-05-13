@@ -66,9 +66,15 @@ class OhMyRuntime:
         self.settings_overrides["model"] = model_name
         self.engine.set_model(model_name)
         settings = load_settings()
-        profile_name, _ = settings.resolve_profile()
+        profile_name, profile = settings.resolve_profile()
+        history = list(profile.model_history or [])
+        if model_name in history:
+            history.remove(model_name)
+        history.insert(0, model_name)
+        history = history[:20]
         auth = AuthManager(settings)
         auth.update_profile(profile_name, model=model_name)
+        auth.update_profile_history(profile_name, history)
         return model_name
 
     def reconfigure(self, *, base_url: str | None = None, api_key: str | None = None, model: str | None = None, effort: str | None = None) -> str:

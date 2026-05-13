@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import BaseModel, Field
 
 from ohmyself.tools.base import BaseTool, ToolExecutionContext, ToolResult
@@ -19,8 +21,9 @@ class FileEditTool(BaseTool):
     input_model = FileEditToolInput
 
     async def execute(self, arguments: FileEditToolInput, context: ToolExecutionContext) -> ToolResult:
+        extra_roots = _resolve_extra_roots(context)
         try:
-            path = resolve_workspace_path(context.cwd, arguments.path)
+            path = resolve_workspace_path(context.cwd, arguments.path, extra_roots=extra_roots)
         except ValueError as exc:
             return ToolResult(output=str(exc), is_error=True)
         if not path.exists():
@@ -34,3 +37,10 @@ class FileEditTool(BaseTool):
             updated = original.replace(arguments.old_str, arguments.new_str, 1)
         path.write_text(updated, encoding="utf-8")
         return ToolResult(output=f"Updated {path}")
+
+
+def _resolve_extra_roots(context: ToolExecutionContext) -> list[Path] | None:
+    linked_dir = context.metadata.get("linked_dir")
+    if not linked_dir or not isinstance(linked_dir, str):
+        return None
+    return [Path(linked_dir).expanduser().resolve()]

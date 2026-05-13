@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
+import platform
 import shlex
 from contextlib import contextmanager
 from datetime import date
@@ -27,6 +29,8 @@ from ohmyself.permissions import PermissionMode
 from ohmyself.runtime import OhMyRuntime, build_api_client, build_runtime
 from ohmyself.services import (
     MAX_ACTIVE_GOALS,
+    SchedulerService,
+    ScheduledTask,
     SessionTranscriptWriter,
     append_experience,
     append_goal,
@@ -69,6 +73,30 @@ from ohmyself.services.goal_progress import (
     set_last_progress_check_date,
 )
 from ohmyself.services.goal_session import list_goal_sessions
+from ohmyself.services.status import (
+    StatusEntry,
+    format_recent_status_for_prompt,
+    format_recent_status_table,
+    format_today_status_markdown,
+    get_recent_status,
+    get_status_fields,
+    get_today_status,
+    has_today_status,
+    save_status,
+    save_status_fields,
+)
+from ohmyself.services.coping import (
+    append_coping_rule,
+    format_coping_for_prompt,
+    has_coping_content,
+    read_coping,
+)
+from ohmyself.services.strategy import (
+    format_strategy_for_prompt,
+    has_strategy_content,
+    read_strategy,
+    update_strategy,
+)
 from ohmyself.terminal_ui import (
     GOAL_CYCLE_SENTINEL,
     RestoredSessionSummary,
@@ -80,17 +108,19 @@ from ohmyself.terminal_ui import (
     print_goal_switch_feedback,
     print_help_panel,
     print_markdown,
+    print_model_panel,
     print_status,
-    prompt_goal_memory_update,
-    prompt_input,
-    prompt_permission,
     print_status_panel,
     print_subagent_completed,
     print_subagent_started,
+    print_success,
     print_tool_completed,
     print_tool_started,
     print_tools_panel,
     print_welcome,
+    prompt_goal_memory_update,
+    prompt_input,
+    prompt_permission,
     supports_live_markdown,
     update_live_markdown,
 )
@@ -121,6 +151,34 @@ async def _permission_prompt(tool_name: str, reason: str) -> bool:
         return prompt_permission(tool_name, reason)
 
     return await asyncio.to_thread(_ask)
+
+
+def _register_os_shutdown_handler(scheduler: SchedulerService) -> None:
+    system = platform.system()
+    try:
+        if system == "Windows":
+            CTRL_SHUTDOWN_EVENT = 5
+            CTRL_LOGOFF_EVENT = 6
+            handler_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong)
+
+            @handler_type
+            def _handler(ctrl_type: int) -> bool:
+                if ctrl_type in (CTRL_SHUTDOWN_EVENT, CTRL_LOGOFF_EVENT):
+                    scheduler.set_os_shutdown_pending()
+                    return True
+                return False
+
+            ctypes.windll.kernel32.SetConsoleCtrlHandler(_handler, True)
+        else:
+            import signal
+
+            def _sig_handler(signum: int, frame: object) -> None:
+                del signum, frame
+                scheduler.set_os_shutdown_pending()
+
+            signal.signal(signal.SIGTERM, _sig_handler)
+    except Exception:
+        pass
 
 
 def _build_transcript_writer(runtime: OhMyRuntime) -> SessionTranscriptWriter:
@@ -504,14 +562,44 @@ def _handle_model_command(runtime: OhMyRuntime, args: str) -> None:
     if not args.strip():
         settings = runtime.current_settings()
         profile_name, profile = settings.resolve_profile(runtime.settings_overrides.get("active_profile"))
-        cons = console()
-        cons.print(f"profile={profile_name}")
-        cons.print(f"current={profile.resolved_model}")
-        cons.print(f"default={profile.default_model}")
+        model_history = list(profile.model_history or [])
+        other_profiles: list[tuple[str, str, str]] = []
+        for pn, p in settings.merged_profiles().items():
+            if pn != profile_name:
+                other_profiles.append((pn, p.label, p.resolved_model))
+        print_model_panel(
+            profile_name=profile_name,
+            profile_label=profile.label,
+            current_model=profile.resolved_model,
+            default_model=profile.default_model,
+            model_history=model_history,
+            other_profiles=other_profiles,
+        )
         return
-    model_name = args.strip()
-    runtime.switch_model(model_name)
-    print_status(f"已切换到模型: {model_name}")
+    target = args.strip()
+    settings = runtime.current_settings()
+    profiles = settings.merged_profiles()
+    if target in profiles:
+        profile_name, _ = settings.resolve_profile(runtime.settings_overrides.get("active_profile"))
+        if target != profile_name:
+            auth = AuthManager(settings)
+            auth.use_profile(target)
+            runtime.settings_overrides["active_profile"] = target
+            runtime.settings_overrides.pop("model", None)
+            new_settings = runtime.current_settings()
+            _, new_profile = new_settings.resolve_profile(target)
+            configured = auth.get_profile_statuses()[target]["configured"]
+            if new_profile.base_url or not configured:
+                new_client = build_api_client(new_settings, active_profile=target)
+                runtime.engine.set_api_client(new_client)
+            runtime.engine.set_model(new_profile.resolved_model)
+            runtime.engine.tool_metadata["active_profile"] = target
+            print_status(f"已切换到 Profile: {target}  (模型: {new_profile.resolved_model})")
+        else:
+            print_status(f"已在当前 Profile: {target}")
+        return
+    runtime.switch_model(target)
+    print_status(f"已切换到模型: {target}")
 
 
 def _runtime_status_rows(runtime: OhMyRuntime) -> list[tuple[str, str]]:
@@ -561,10 +649,16 @@ def _build_plan_prompt() -> str:
         f"- {goal.topic}: {goal.description or '(no description)'}"
         for goal in active_goals
     )
+    strategy_context = format_strategy_for_prompt()
+    status_context = format_recent_status_for_prompt(7)
+    coping_context = format_coping_for_prompt()
     return build_plan_organize_prompt(
         goal_context=goal_context,
         active_goal_count=len(active_goals),
         goal_limit=MAX_ACTIVE_GOALS,
+        strategy_context=strategy_context,
+        status_context=status_context,
+        coping_context=coping_context,
     )
 
 
@@ -856,6 +950,104 @@ async def _handle_plan_command(
     )
 
 
+def _handle_schedule_command(scheduler: SchedulerService, instruction: str) -> None:
+    cleaned = instruction.strip()
+
+    if not cleaned or cleaned == "list":
+        tasks = scheduler.list_tasks()
+        if not tasks:
+            print_status("No scheduled tasks.")
+            return
+        lines = ["# Scheduled Tasks"]
+        for t in tasks:
+            line = f"- `{t.id}` | {t.type}"
+            if t.type == "os_task":
+                line += f" | cron={t.cron_expr}"
+            elif t.type == "on_shutdown":
+                line += " | on OS shutdown detection"
+            line += f" | {t.status} | {t.prompt[:60]}"
+            lines.append(line)
+        print_markdown("\n".join(lines))
+        return
+
+    if cleaned.startswith("cancel "):
+        task_id = cleaned[len("cancel "):].strip()
+        if scheduler.cancel_task(task_id):
+            print_success(f"Task {task_id} cancelled.")
+        else:
+            print_error(f"Task {task_id} not found or already completed.")
+        return
+
+    if cleaned.startswith("shutdown "):
+        prompt = cleaned[len("shutdown "):].strip()
+        if not prompt:
+            print_error("Usage: /schedule shutdown <prompt>")
+            return
+        task = scheduler.schedule_on_shutdown(prompt)
+        print_success(f"Shutdown task scheduled. ID: {task.id}")
+        return
+
+    if cleaned.startswith("os "):
+        _handle_schedule_os_command(scheduler, cleaned[len("os "):].strip())
+        return
+
+    if cleaned == "help":
+        help_text = """# /schedule Commands
+- `/schedule` or `/schedule list` — list all tasks
+- `/schedule os add <cron> <prompt>` — OS-level reminder (Windows Task Scheduler, fires even when ohmy is closed)
+- `/schedule os list` — list OS tasks
+- `/schedule os remove <id>` — remove OS task
+- `/schedule shutdown <prompt>` — run on OS shutdown detection
+- `/schedule cancel <id>` — cancel any task"""
+        print_markdown(help_text)
+        return
+
+    print_error(f"Unknown schedule command: {instruction}. Use /schedule help for usage.")
+
+
+def _handle_schedule_os_command(scheduler: SchedulerService, instruction: str) -> None:
+    cleaned = instruction.strip()
+
+    if not cleaned or cleaned == "list":
+        tasks = scheduler.list_os_tasks()
+        if not tasks:
+            print_status("No OS-level scheduled tasks.")
+            return
+        lines = ["# OS Scheduled Tasks (fire even when ohmy is closed)"]
+        for t in tasks:
+            line = f"- `{t.id}` | cron={t.cron_expr} | {t.status} | {t.prompt[:60]}"
+            lines.append(line)
+        print_markdown("\n".join(lines))
+        return
+
+    if cleaned.startswith("remove "):
+        task_id = cleaned[len("remove "):].strip()
+        if scheduler.remove_os_task(task_id):
+            print_success(f"OS task {task_id} removed from Windows Task Scheduler.")
+        else:
+            print_error(f"OS task {task_id} not found.")
+        return
+
+    if cleaned.startswith("add "):
+        rest = cleaned[len("add "):].strip()
+        i = 0
+        while i < len(rest) and rest[i] != " ":
+            i += 1
+        cron_expr = rest[:i].strip()
+        prompt = rest[i:].strip()
+        if not cron_expr or not prompt:
+            print_error("Usage: /schedule os add <cron> <reminder>")
+            return
+        try:
+            task = scheduler.schedule_on_os(cron_expr, prompt)
+            print_success(f"OS reminder registered.\nID: {task.id}\nCron: {task.cron_expr}\nFires even when ohmy is closed.")
+        except (ValueError, RuntimeError) as exc:
+            print_error(f"Failed to register OS task: {exc}")
+        return
+
+    print_error(f"Unknown os subcommand: {instruction}. Use: add, list, remove")
+
+
 async def _handle_goal_command(
     runtime: OhMyRuntime,
     transcript: SessionTranscriptWriter,
@@ -1056,6 +1248,39 @@ async def _maybe_prompt_memory_update_on_leave(runtime: OhMyRuntime, transcript:
     if not prompt_goal_memory_update():
         return
     await _handle_goal_memory_update(runtime, transcript)
+
+
+async def _maybe_prompt_normal_memory_update(runtime: OhMyRuntime, transcript: SessionTranscriptWriter) -> None:
+    if not _has_meaningful_conversation(runtime):
+        return
+    from rich.prompt import Confirm
+
+    console().print()
+    if not Confirm.ask(
+        "当前对话有新的内容，是否更新个人记忆？",
+        console=console(),
+        default=True,
+    ):
+        return
+    from ohmyself.config.paths import get_memory_dir
+    from ohmyself.services.user_profile import generate_user_profile, save_user_profile
+
+    print_status("正在分析对话更新个人记忆...")
+    try:
+        memory_dir = get_memory_dir()
+        profile = await generate_user_profile(
+            api_client=runtime.engine.api_client,
+            model=runtime.engine.model,
+            max_tokens=runtime.engine.max_tokens,
+            conversation=runtime.engine.messages,
+            memory_dir=memory_dir,
+        )
+        save_user_profile(memory_dir, profile)
+        print_success("个人记忆已更新。")
+        transcript.record_status("Memory", "Updated user_profile.md")
+    except Exception as exc:
+        print_error(f"Failed to update user memory: {exc}")
+        transcript.record_status("Memory", f"Update failed: {exc}")
 
 
 def _handle_goal_memory_show(runtime: OhMyRuntime) -> None:
@@ -1488,6 +1713,345 @@ async def _maybe_daily_progress_update(runtime: OhMyRuntime) -> None:
     set_last_progress_check_date(today)
 
 
+_STATUS_PARSE_SYSTEM_PROMPT = """\
+You are a personal status analyst. Parse the user's natural language status update into structured data.
+
+The user describes their current personal state across several dimensions, plus their future expectations.
+Available status fields: {fields}
+
+Return ONLY a JSON object (no markdown wrapping, no extra text):
+{{
+  "fields": {{"睡眠情况": "...", "身体情况": "...", ...}},
+  "future_expectation": "user's expectation for the near future",
+  "risks": ["identified risk 1", "identified risk 2"],
+  "preparations": ["suggested preparation 1", "suggested preparation 2"],
+  "notes": "any additional notes or concerns"
+}}
+
+Guidelines:
+- For each available field, extract the value from the user's message. If not mentioned, use "未提及".
+- future_expectation: what the user expects in the coming days/weeks.
+- risks: based on the user's current status and expectations, identify 1-3 potential risks (fatigue, emotional burnout, health issues, etc.).
+- preparations: for each risk, suggest a concrete preparation or mitigation.
+- notes: capture any other relevant context the user shared.
+- Be concise but thorough. Risks and preparations should be actionable."""
+
+
+def _build_status_parse_prompt(user_message: str) -> str:
+    fields = get_status_fields()
+    fields_text = ", ".join(fields)
+    prompt = _STATUS_PARSE_SYSTEM_PROMPT.format(fields=fields_text)
+    return prompt + f"\n\nUser message:\n{user_message}"
+
+
+async def _parse_status_from_message(
+    runtime: OhMyRuntime,
+    user_message: str,
+    existing_entry: StatusEntry | None,
+) -> StatusEntry | None:
+    from datetime import datetime
+
+    from ohmyself.api.client import ApiMessageCompleteEvent, ApiMessageRequest
+    from ohmyself.engine.messages import ConversationMessage
+
+    today = date.today()
+    system_prompt = _STATUS_PARSE_SYSTEM_PROMPT.format(fields=", ".join(get_status_fields()))
+
+    user_text = user_message.strip()
+    if existing_entry:
+        user_text = f"Previous status: {json.dumps(existing_entry.to_payload(), ensure_ascii=False)}\n\nUpdate with: {user_text}"
+
+    request = ApiMessageRequest(
+        model=runtime.engine.model,
+        messages=[ConversationMessage.from_user_text(user_text)],
+        system_prompt=system_prompt,
+        max_tokens=runtime.engine.max_tokens,
+    )
+    result_text = ""
+    async for event in runtime.engine.api_client.stream_message(request):
+        if isinstance(event, ApiMessageCompleteEvent):
+            result_text = event.message.text.strip()
+
+    if not result_text:
+        return None
+
+    try:
+        import re
+        json_match = re.search(r"\{.*\}", result_text, re.DOTALL)
+        if json_match:
+            result_text = json_match.group(0)
+        payload = json.loads(result_text)
+        return StatusEntry(
+            date=today.isoformat(),
+            fields=payload.get("fields") or {},
+            future_expectation=str(payload.get("future_expectation", "")),
+            risks=payload.get("risks") or [],
+            preparations=payload.get("preparations") or [],
+            notes=str(payload.get("notes", "")),
+            updated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+_COPING_MATCH_SYSTEM_PROMPT = """\
+You are a coping strategy advisor. Given the user's current personal status and their coping rulebook, identify which rules apply.
+
+Return ONLY a JSON array of applicable rule descriptions (no markdown wrapping, no extra text):
+["rule description 1", "rule description 2"]
+
+If no rules match, return an empty array: []
+Only match rules that are clearly relevant to the current status."""
+
+
+async def _match_coping_rules(
+    runtime: OhMyRuntime,
+    status_entry: StatusEntry,
+) -> str:
+    from ohmyself.api.client import ApiMessageCompleteEvent, ApiMessageRequest
+    from ohmyself.engine.messages import ConversationMessage
+
+    coping_content = read_coping()
+    if not coping_content.strip():
+        return ""
+
+    status_text = json.dumps(status_entry.to_payload(), ensure_ascii=False)
+    user_text = f"Coping rules:\n{coping_content}\n\nCurrent status:\n{status_text}"
+
+    request = ApiMessageRequest(
+        model=runtime.engine.model,
+        messages=[ConversationMessage.from_user_text(user_text)],
+        system_prompt=_COPING_MATCH_SYSTEM_PROMPT,
+        max_tokens=runtime.engine.max_tokens,
+    )
+    result_text = ""
+    async for event in runtime.engine.api_client.stream_message(request):
+        if isinstance(event, ApiMessageCompleteEvent):
+            result_text = event.message.text.strip()
+
+    if not result_text:
+        return ""
+
+    try:
+        import re
+        json_match = re.search(r"\[.*\]", result_text, re.DOTALL)
+        if json_match:
+            result_text = json_match.group(0)
+        rules = json.loads(result_text)
+        if isinstance(rules, list) and rules:
+            lines = ["\n## 相关应对策略"]
+            for r in rules:
+                lines.append(f"- {r}")
+            return "\n".join(lines)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ""
+
+
+_DAILY_PLAN_GENERATE_PROMPT = """\
+You are a personal daily planner. Generate today's plan based on the user's context.
+
+Guidelines:
+- Consider the user's long-term strategy and ensure today's actions align with it.
+- Consider the user's current personal status (energy, emotions, health) and adjust plan difficulty accordingly.
+- Consider active goals and their progress — push forward where momentum exists.
+- Consider risks identified in the status and include mitigation actions.
+- Consider relevant coping strategies.
+- Look at yesterday's plan for continuity.
+- The plan should be realistic for one day. Prioritize the most important 3-5 items.
+- If the user is low energy or not well, suggest rest and recovery items.
+- Structure: ## Focus (1 top priority), ## Tasks (3-5 items), ## Notes.
+
+User context:
+{context}
+
+Write the plan to: {plan_path}
+Use the write_file tool (not shell commands). Always write with UTF-8 encoding.
+Reply with a brief summary of the plan (1-2 sentences)."""
+
+
+async def _generate_daily_plan(
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+    status_entry: StatusEntry,
+) -> None:
+    from datetime import timedelta
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    strategy_text = format_strategy_for_prompt()
+    status_text = json.dumps(status_entry.to_payload(), ensure_ascii=False)
+    goals_text = format_goals_markdown(_active_goals())
+    coping_text = format_coping_for_prompt()
+
+    from ohmyself.services.plan import get_plan_path, read_text_file_robust
+    yesterday_plan = ""
+    yesterday_path = get_plan_path(yesterday)
+    if yesterday_path.exists():
+        yesterday_plan = read_text_file_robust(yesterday_path)
+
+    today_plan_content, _ = read_today_plan()
+
+    context = f"""\
+## 长期战略
+{strategy_text}
+
+## 当前个人状态
+{status_text}
+
+## 活跃目标
+{goals_text}
+
+## 应对策略
+{coping_text}
+
+## 昨日计划
+{yesterday_plan if yesterday_plan.strip() else "(无)"}
+
+## 今日已有计划
+{today_plan_content if today_plan_content.strip() else "(尚未设定)"}"""
+
+    plan_path = get_plan_path(today)
+    prompt = _DAILY_PLAN_GENERATE_PROMPT.format(context=context, plan_path=plan_path)
+
+    print_status("基于当前状态生成今日计划...")
+    await _stream_prompt(runtime, prompt, transcript)
+
+
+async def _daily_status_review(
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+) -> None:
+    fields = get_status_fields()
+    recent = get_recent_status(7)
+
+    if recent:
+        console().print()
+        print_markdown(format_recent_status_table(7))
+
+    today_entry = get_today_status()
+    if today_entry:
+        console().print()
+        print_markdown(format_today_status_markdown())
+        print_status("今日状态已记录。如需调整请输入内容，或输入 skip 跳过。")
+    else:
+        fields_display = "、".join(fields)
+        print_status(f"请描述今日状态（{fields_display}、未来预期等），或输入 skip 跳过。")
+
+    line = await asyncio.to_thread(input, "> ")
+    stripped = line.strip()
+    if not stripped or stripped.lower() == "skip":
+        console().print()
+        return
+
+    print_status("解析状态中...")
+    status_entry = await _parse_status_from_message(runtime, stripped, today_entry)
+    if status_entry is None:
+        print_error("无法解析状态信息，请稍后使用 /status 手动更新。")
+        return
+
+    save_status(status_entry)
+    console().print()
+    print_markdown(format_today_status_markdown())
+    print_success("状态已保存。")
+
+    if has_coping_content():
+        matches = await _match_coping_rules(runtime, status_entry)
+        if matches:
+            print_markdown(matches)
+
+    await _generate_daily_plan(runtime, transcript, status_entry)
+
+
+async def _handle_status_command(
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+    instruction: str,
+) -> None:
+    cleaned = instruction.strip()
+
+    if not cleaned:
+        print_markdown(format_today_status_markdown())
+        recent = get_recent_status(7)
+        if len(recent) > 1:
+            console().print()
+            print_markdown("## 近期趋势\n\n" + format_recent_status_table(7))
+        return
+
+    if cleaned == "system":
+        print_status_panel(_runtime_status_rows(runtime))
+        return
+
+    if cleaned.startswith("fields "):
+        sub = cleaned[len("fields "):].strip()
+        fields = get_status_fields()
+        if sub.startswith("add "):
+            name = sub[len("add "):].strip()
+            if not name:
+                print_error("Usage: /status fields add <name>")
+                return
+            if name in fields:
+                print_error(f"Field '{name}' already exists.")
+                return
+            fields.append(name)
+            save_status_fields(fields)
+            print_success(f"Field '{name}' added. Current fields: {', '.join(fields)}")
+            return
+        if sub.startswith("remove "):
+            name = sub[len("remove "):].strip()
+            if not name:
+                print_error("Usage: /status fields remove <name>")
+                return
+            if name not in fields:
+                print_error(f"Field '{name}' not found.")
+                return
+            if len(fields) <= 1:
+                print_error("Cannot remove the last field.")
+                return
+            fields.remove(name)
+            save_status_fields(fields)
+            print_success(f"Field '{name}' removed. Current fields: {', '.join(fields)}")
+            return
+        if sub == "list":
+            print_status(f"Current fields: {', '.join(fields)}")
+            return
+        print_error("Usage: /status fields [add|remove|list]")
+        return
+
+    if cleaned == "update":
+        await _daily_status_review(runtime, transcript)
+        return
+
+    print_error("Usage: /status | /status system | /status update | /status fields [add|remove|list]")
+
+
+async def _handle_strategy_command(runtime: OhMyRuntime, instruction: str) -> None:
+    cleaned = instruction.strip()
+    if cleaned:
+        print_error("Usage: /strategy — 查看当前长期战略。战略应通过日常对话中与AI讨论后自然调整。")
+        return
+    content = read_strategy()
+    if not content.strip():
+        print_status("尚未设定长期发展战略。在对话中与AI讨论你的人生/职业方向，AI会帮你逐步形成战略文档。")
+        return
+    print_markdown(content)
+
+
+async def _handle_coping_command(runtime: OhMyRuntime, instruction: str) -> None:
+    cleaned = instruction.strip()
+    if not cleaned:
+        content = read_coping()
+        if not content.strip():
+            print_status("尚未设定应对策略。使用 /coping <规则> 添加，格式：当 [状态] 时 → [应对措施]")
+            return
+        print_markdown(content)
+        return
+    rule = cleaned
+    append_coping_rule("- " + rule if not rule.startswith("- ") else rule)
+    print_success(f"应对规则已添加。使用 /coping 查看所有规则。")
+
+
 async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_url: str | None, system_prompt: str | None, api_key: str | None, api_format: str | None, permission_mode: str | None, active_profile: str | None) -> None:
     runtime = await build_runtime(
         cwd=cwd,
@@ -1508,6 +2072,20 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
     await _maybe_daily_progress_update(runtime)
 
     transcript = _build_transcript_writer(runtime)
+
+    scheduler = SchedulerService()
+    runtime.engine.tool_metadata["scheduler"] = scheduler
+
+    _register_os_shutdown_handler(scheduler)
+
+    if scheduler.get_os_shutdown_pending():
+        print_status("[Scheduled] System was shut down. Running pending shutdown tasks...")
+        for task in scheduler.get_shutdown_tasks():
+            print_status(f"[Scheduled/os-shutdown] {task.prompt[:80]}")
+            await _stream_prompt(runtime, task.prompt, transcript)
+            scheduler.mark_executed(task.id)
+        scheduler.clear_os_shutdown_pending()
+
     settings = runtime.current_settings()
     profile_name, profile = settings.resolve_profile(runtime.settings_overrides.get("active_profile"))
     print_welcome(
@@ -1519,6 +2097,10 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         tool_count=len(_list_tools_data()),
         restored=None,
     )
+
+    if not has_today_status():
+        await _daily_status_review(runtime, transcript)
+
     while True:
         try:
             goal_topic = ""
@@ -1535,6 +2117,11 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
             )
         except EOFError:
             console().print()
+            shutdown_tasks = scheduler.get_shutdown_tasks()
+            for task in shutdown_tasks:
+                print_status(f"[Scheduled/shutdown] {task.prompt[:80]}")
+                await _stream_prompt(runtime, task.prompt, transcript)
+                scheduler.mark_executed(task.id)
             break
         except KeyboardInterrupt:
             console().print()
@@ -1550,8 +2137,18 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
             print_help_panel()
             continue
         if stripped == "/exit":
-            if runtime.goal_context is not None and runtime.goal_context.active_goal_id is not None:
+            if not has_today_status():
+                print_status("今日状态尚未记录。下次打开时请使用 /status 更新。")
+            print_status("建议留出时间思考长期发展战略，下次打开时可与AI讨论。")
+            if runtime.active_goal_id:
                 await _maybe_prompt_memory_update_on_leave(runtime, transcript)
+            else:
+                await _maybe_prompt_normal_memory_update(runtime, transcript)
+            shutdown_tasks = scheduler.get_shutdown_tasks()
+            for task in shutdown_tasks:
+                print_status(f"[Scheduled/shutdown] {task.prompt[:80]}")
+                await _stream_prompt(runtime, task.prompt, transcript)
+                scheduler.mark_executed(task.id)
             break
         if stripped == "/help":
             print_help_panel()
@@ -1565,8 +2162,20 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         if stripped == "/model" or stripped.startswith("/model "):
             _handle_model_command(runtime, stripped[len("/model") :].strip())
             continue
-        if stripped == "/status":
+        if stripped == "/status" or stripped.startswith("/status "):
+            instruction = stripped[len("/status") :].strip()
+            await _handle_status_command(runtime, transcript, instruction)
+            continue
+        if stripped == "/sysinfo":
             print_status_panel(_runtime_status_rows(runtime))
+            continue
+        if stripped == "/strategy" or stripped.startswith("/strategy "):
+            instruction = stripped[len("/strategy") :].strip()
+            await _handle_strategy_command(runtime, instruction)
+            continue
+        if stripped == "/coping" or stripped.startswith("/coping "):
+            instruction = stripped[len("/coping") :].strip()
+            await _handle_coping_command(runtime, instruction)
             continue
         if stripped == "/restore" or stripped.startswith("/restore "):
             sid = stripped[len("/restore "):].strip() if stripped.startswith("/restore ") else None
@@ -1590,6 +2199,10 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         if stripped == "/plan" or stripped.startswith("/plan "):
             instruction = stripped[len("/plan") :].strip()
             await _handle_plan_command(runtime, transcript, instruction)
+            continue
+        if stripped == "/schedule" or stripped.startswith("/schedule "):
+            instruction = stripped[len("/schedule") :].strip()
+            _handle_schedule_command(scheduler, instruction)
             continue
         if stripped == "/clear":
             runtime.engine.clear()

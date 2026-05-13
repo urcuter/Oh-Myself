@@ -99,7 +99,8 @@ class GoalAgentContext:
             f"- 描述: {goal.description or '(无)'}\n"
             f"- 进度: {goal.progress_percent}%\n"
             f"- 截止: {goal.ends_at.isoformat() if goal.ends_at else '未设置'}\n"
-            f"- 状态: {goal.status}"
+            f"- 状态: {goal.status}\n"
+            f"- 关联目录: {goal.linked_dir if goal.linked_dir else '未设置'}{'（此目标的工作路径，存放相关的资料、进度与具体工作内容）' if goal.linked_dir else ''}"
         )
 
         memory_section = format_goal_memory_for_prompt(goal.entry_id)

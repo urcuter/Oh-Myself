@@ -10,7 +10,9 @@ def create_tool_registry() -> ToolRegistry:
     from ohmyself.tools.grep_tool import GrepTool
     from ohmyself.tools.subagent_tool import DelegateTaskTool
     from ohmyself.tools.todo_write_tool import TodoWriteTool
+    from ohmyself.tools.schedule_task_tool import ScheduleTaskTool
     from ohmyself.tools.tool_search_tool import ToolSearchTool
+    from ohmyself.tools.update_user_status_tool import UpdateUserStatusTool
 
     registry = ToolRegistry()
     for tool in (
@@ -22,7 +24,9 @@ def create_tool_registry() -> ToolRegistry:
         GrepTool(),
         DelegateTaskTool(),
         TodoWriteTool(),
+        ScheduleTaskTool(),
         ToolSearchTool(),
+        UpdateUserStatusTool(),
     ):
         registry.register(tool)
     return registry

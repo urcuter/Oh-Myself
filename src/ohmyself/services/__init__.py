@@ -1,6 +1,6 @@
 """Service helpers for Oh Myself."""
 
-from ohmyself.services.session_storage import get_project_session_dir, load_latest_session_snapshot, save_session_snapshot
+from ohmyself.services.session_storage import get_project_session_dir, list_project_sessions, load_latest_session_snapshot, load_session_snapshot_by_id, save_session_snapshot
 from ohmyself.services.transcript_memory import SessionTranscriptWriter
 from ohmyself.services.user_profile import generate_user_profile, get_user_profile_path, load_user_profile, save_user_profile
 from ohmyself.services.experience import (
@@ -22,6 +22,7 @@ from ohmyself.services.plan import (
     has_plan_inbox_content,
     parse_plan_content,
     read_plan_inbox,
+    read_text_file_robust,
     read_today_plan,
 )
 from ohmyself.services.goal import (
@@ -37,6 +38,7 @@ from ohmyself.services.goal import (
     get_goal_path,
     has_goal_content,
     list_goals,
+    set_goal_linked_dir,
     stop_goal,
     update_goal_progress,
 )
@@ -63,6 +65,32 @@ from ohmyself.services.goal_progress import (
 from ohmyself.services.goal_session import (
     list_goal_sessions,
     link_session_to_goal,
+)
+from ohmyself.services.scheduler import SchedulerService, ScheduledTask
+from ohmyself.services.status import (
+    StatusEntry,
+    format_recent_status_for_prompt,
+    format_recent_status_table,
+    format_today_status_markdown,
+    get_recent_status,
+    get_status_fields,
+    get_status_for_date,
+    get_today_status,
+    has_today_status,
+    save_status,
+    save_status_fields,
+)
+from ohmyself.services.coping import (
+    append_coping_rule,
+    format_coping_for_prompt,
+    has_coping_content,
+    read_coping,
+)
+from ohmyself.services.strategy import (
+    format_strategy_for_prompt,
+    has_strategy_content,
+    read_strategy,
+    update_strategy,
 )
 
 __all__ = [
@@ -111,16 +139,41 @@ __all__ = [
     "link_session_to_goal",
     "list_goal_sessions",
     "list_goals",
+    "list_project_sessions",
     "load_latest_session_snapshot",
+    "load_session_snapshot_by_id",
     "load_user_profile",
     "parse_plan_content",
     "read_goal_memory",
     "read_plan_inbox",
+    "read_text_file_robust",
     "read_today_plan",
     "save_session_snapshot",
     "save_user_profile",
+    "set_goal_linked_dir",
     "stop_goal",
     "update_goal_progress",
     "update_goal_memory_via_ai",
     "build_goal_memory_retrieval_task",
+    "ScheduledTask",
+    "SchedulerService",
+    "StatusEntry",
+    "append_coping_rule",
+    "format_coping_for_prompt",
+    "format_recent_status_for_prompt",
+    "format_recent_status_table",
+    "format_strategy_for_prompt",
+    "format_today_status_markdown",
+    "get_recent_status",
+    "get_status_fields",
+    "get_status_for_date",
+    "get_today_status",
+    "has_coping_content",
+    "has_strategy_content",
+    "has_today_status",
+    "read_coping",
+    "read_strategy",
+    "save_status",
+    "save_status_fields",
+    "update_strategy",
 ]

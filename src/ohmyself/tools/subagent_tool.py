@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import asyncio  # 异步 I/O 模块
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -26,7 +26,7 @@ class DelegateTaskToolInput(BaseModel):
     role: str = Field(default="specialist", description="Short role label such as researcher, coder, or reviewer.")
     context: str = Field(default="", description="Extra context or constraints that the child agent should consider.")
     allowed_tools: list[str] = Field(
-        default_factory=list,
+        default_factory=list, 
         description="Optional subset of tool names exposed to the child agent.",
     )
     read_only: bool = Field(
@@ -92,10 +92,11 @@ class DelegateTaskTool(BaseTool):
             allowed_tools=arguments.allowed_tools,
             read_only=arguments.read_only,
         )
+
         if not child_registry.list_tools():
             return ToolResult(output="No tools are available for the delegated subagent.", is_error=True)
 
-        child_session_id = uuid4().hex[:12]
+        child_session_id = uuid4().hex[:12] # 生成一个随机的子会话 ID，长度为 12 个十六进制字符
         child_metadata = {
             "session_id": child_session_id,
             "parent_session_id": context.metadata.get("session_id"),
@@ -162,7 +163,7 @@ class DelegateTaskTool(BaseTool):
 
 def _build_child_registry(parent_registry: ToolRegistry, *, allowed_tools: list[str], read_only: bool) -> ToolRegistry:
     registry = ToolRegistry()
-    explicit_subset = bool(allowed_tools)
+    explicit_subset = bool(allowed_tools) # 是否显式指定了工具子集
     allowed_set = {name for name in allowed_tools if name and name != DelegateTaskTool.name}
     if explicit_subset and not allowed_set:
         return registry
