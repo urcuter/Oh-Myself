@@ -1243,6 +1243,8 @@ async def _perform_goal_exit(runtime: OhMyRuntime, transcript: SessionTranscript
 
 
 async def _maybe_prompt_memory_update_on_leave(runtime: OhMyRuntime, transcript: SessionTranscriptWriter) -> None:
+    if not runtime.active_goal_id:
+        return
     if not _has_meaningful_conversation(runtime):
         return
     if not prompt_goal_memory_update():
@@ -2227,8 +2229,10 @@ async def _handle_goal_cycle(runtime: OhMyRuntime, transcript: SessionTranscript
     goal_context = runtime.goal_context
     if goal_context is None:
         return
-    if goal_context.active_goal_id is not None:
+    if runtime.active_goal_id:
         await _maybe_prompt_memory_update_on_leave(runtime, transcript)
+    else:
+        await _maybe_prompt_normal_memory_update(runtime, transcript)
     _save_runtime_snapshot(runtime)
     new_goal_id = goal_context.active_goal_id
     runtime.active_goal_id = new_goal_id

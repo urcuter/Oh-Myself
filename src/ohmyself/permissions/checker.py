@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass
+from pathlib import Path
 
 from ohmyself.config.settings import PermissionSettings
 from ohmyself.permissions.modes import PermissionMode
@@ -13,6 +14,25 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "*/.kube/config",
     "*/.ohmyself/credentials.json",
 )
+
+_USER_PROTECTED_FILES: tuple[str, ...] = (
+    "coping.md",
+    "strategy.md",
+)
+
+
+def _is_user_protected_path(file_path: str) -> bool:
+    if not file_path:
+        return False
+    from ohmyself.config.paths import get_home_dir
+
+    home = Path(get_home_dir()).resolve()
+    resolved = Path(file_path).resolve()
+    try:
+        relative = resolved.relative_to(home)
+        return str(relative) in _USER_PROTECTED_FILES
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -42,6 +62,12 @@ class PermissionChecker:
             for pattern in SENSITIVE_PATH_PATTERNS:
                 if fnmatch.fnmatch(file_path.rstrip("/"), pattern) or fnmatch.fnmatch(file_path.rstrip("/") + "/", pattern):
                     return PermissionDecision(False, reason=f"Access denied: sensitive path {file_path}")
+        if _is_user_protected_path(file_path or ""):
+            return PermissionDecision(
+                True,
+                requires_confirmation=True,
+                reason=f"Protected user file ({file_path}) — confirmation required.",
+            )
         if tool_name in self._settings.denied_tools:
             return PermissionDecision(False, reason=f"{tool_name} is explicitly denied")
         if tool_name in self._settings.allowed_tools:
