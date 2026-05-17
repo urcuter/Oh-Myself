@@ -26,7 +26,8 @@ class GlobTool(BaseTool):
 
     async def execute(self, arguments: GlobToolInput, context: ToolExecutionContext) -> ToolResult:
         root = _resolve_path(context.cwd, arguments.root) if arguments.root else context.cwd
-        matches = await _glob(root, arguments.pattern, limit=arguments.limit)
+        root, pattern = _normalize_glob_pattern(arguments.pattern, root)
+        matches = await _glob(root, pattern, limit=arguments.limit)
         if not matches:
             return ToolResult(output="(no matches)")
         return ToolResult(output="\n".join(matches))
@@ -68,4 +69,24 @@ async def _glob(root: Path, pattern: str, *, limit: int) -> list[str]: # * è¡¨ç¤
         lines.sort()
         return lines
     return sorted(str(path.relative_to(root)) for path in root.glob(pattern))[:limit]
+
+
+def _normalize_glob_pattern(pattern: str, root: Path) -> tuple[Path, str]:
+    pp = Path(pattern)
+    if not pp.is_absolute():
+        return root, pattern
+
+    parts = pp.parts
+    glob_idx = None
+    for i, p in enumerate(parts):
+        if any(c in p for c in ('*', '?', '[')):
+            glob_idx = i
+            break
+
+    if glob_idx is None:
+        return pp.parent, pp.name
+    if glob_idx == 0:
+        return root, pattern
+
+    return Path(*parts[:glob_idx]), str(Path(*parts[glob_idx:]))
 

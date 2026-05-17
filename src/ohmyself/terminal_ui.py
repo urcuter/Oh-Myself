@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import sys
+import textwrap
+import unicodedata
 from typing import Iterable
 
 from rich import box
@@ -50,7 +52,7 @@ LOCAL_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/exper add [content]", "Add a life experience to the local experience library"),
     ("/exper [question]", "Answer by retrieving relevant local life experiences"),
     ("/exper organize", "Classify default experience entries into topic files"),
-    ("/goal [topic]", "Show goals, or add one with optional --desc and --ends"),
+    ("/goal [topic]", "Show goals, or add one with optional --desc, --ends, --progress, --dir"),
     ("/goal switch [id]", "Switch to a goal's agent context"),
     ("/goal exit", "Exit goal mode back to general agent"),
     ("/goal memory", "View current goal's memory files"),
@@ -58,6 +60,7 @@ LOCAL_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/goal memory search [query]", "Search goal memory and experiences (--deep for sessions)"),
     ("/goal sessions", "View sessions linked to current goal"),
     ("/goal progress", "View current goal's progress history (or set with /goal progress [id] [0-100])"),
+    ("/goal dir [id] [path]", "Set or clear a goal's linked directory (omit id when in goal mode, --clear to remove)"),
     ("/goal done [id]", "Mark a goal completed"),
     ("/goal stop [id]", "Stop a goal"),
     ("/plan [content]", "Show today's organized plan, or add content and auto-organize it"),
@@ -68,6 +71,9 @@ LOCAL_COMMANDS: tuple[tuple[str, str], ...] = (
 )
 GOAL_CYCLE_SENTINEL = "\x00GC\x00"
 
+_MIN_CONSOLE_WIDTH = 20
+_MIN_CONTENT_WIDTH = 10
+
 
 @dataclass(frozen=True)
 class RestoredSessionSummary:
@@ -77,12 +83,89 @@ class RestoredSessionSummary:
     updated_at: float | None = None
 
 
+def _char_width(ch: str) -> int:
+    """Return terminal display width of a single character.
+
+    CJK fullwidth/wide characters occupy 2 cells; everything else occupies 1.
+    """
+    ea = unicodedata.east_asian_width(ch)
+    return 2 if ea in ("F", "W") else 1
+
+
+def _display_width(text: str) -> int:
+    """Return the terminal display width of *text*."""
+    return sum(_char_width(ch) for ch in text)
+
+
+def _fill_text(text: str, width: int, initial_indent: str, subsequent_indent: str) -> str:
+    """Wrap *text* to fit within *width* terminal cells.
+
+    Prefers breaking at word boundaries (spaces/hyphens) for western text.
+    For CJK text without word delimiters, falls back to breaking at any
+    character boundary so that lines correctly honour the display width.
+    """
+    if not text or width <= 0:
+        return ""
+
+    lines: list[str] = []
+    i = 0
+    n = len(text)
+    indent = initial_indent
+
+    while i < n:
+        # Skip leading spaces at the start of each wrapped line.
+        while i < n and text[i] == " ":
+            i += 1
+        if i >= n:
+            break
+
+        line_chars: list[str] = []
+        line_width = 0
+        last_space_idx = -1  # position in line_chars of the most recent ASCII space
+
+        while i < n:
+            ch = text[i]
+            if ch == "\n":
+                i += 1
+                break
+
+            cw = _char_width(ch)
+
+            if ch == " ":
+                last_space_idx = len(line_chars)
+
+            if line_width + cw > width:
+                if last_space_idx > 0:
+                    # Rewind to the last space so we don't split a word.
+                    keep = last_space_idx + 1  # include the space itself
+                    rewind = len(line_chars) - keep
+                    i -= rewind
+                    line_chars = line_chars[:keep]
+                break
+
+            line_chars.append(ch)
+            line_width += cw
+            i += 1
+
+        # Drop trailing spaces before adding indent.
+        while line_chars and line_chars[-1] == " ":
+            line_chars.pop()
+
+        if line_chars:
+            lines.append(indent + "".join(line_chars))
+        indent = subsequent_indent
+
+    return "\n".join(lines)
+
+
 def console() -> Console:
     return _CONSOLE
 
 
 def print_markdown(text: str) -> None:
+    _CONSOLE.print()
     _CONSOLE.print(_padded_md(text))
+    _CONSOLE.print()
 
 
 def prompt_text(*, model_name: str, goal_topic: str = "") -> Text:
@@ -159,19 +242,48 @@ def _context_snapshot_panel(*, title: str, markdown: str) -> Panel:
 
 
 def format_assistant_chunk(text: str, *, line_start: bool, first_line: bool) -> tuple[str, bool, bool]:
+    """Format a chunk of streaming assistant text with indentation and wrapping.
+
+    Complete lines (ending with ``\\n``) are word-wrapped to fit the terminal
+    width.  Partial lines are passed through as-is because more text is expected
+    to follow and wrapping mid-stream would break words.
+    """
     if not text:
         return "", line_start, first_line
+
+    terminal_width = _CONSOLE.size.width
+    if terminal_width is None or terminal_width < _MIN_CONSOLE_WIDTH:
+        terminal_width = _MIN_CONSOLE_WIDTH
+    content_width = max(_MIN_CONTENT_WIDTH, terminal_width - len(ASSISTANT_INDENT))
+
     parts = text.splitlines(keepends=True)
     rendered: list[str] = []
     current_line_start = line_start
     current_first_line = first_line
+
     for part in parts:
         if current_line_start:
-            rendered.append(ASSISTANT_INDENT)
-        rendered.append(part)
+            if part.endswith("\n"):
+                line_text = part[:-1]
+                if line_text:
+                    wrapped = _fill_text(
+                        line_text,
+                        width=content_width,
+                        initial_indent=ASSISTANT_INDENT,
+                        subsequent_indent=ASSISTANT_INDENT,
+                    )
+                    rendered.append(wrapped)
+                rendered.append("\n")
+            else:
+                rendered.append(ASSISTANT_INDENT)
+                rendered.append(part)
+        else:
+            rendered.append(part)
+
         current_line_start = part.endswith("\n")
         if current_line_start:
             current_first_line = False
+
     return "".join(rendered), current_line_start, current_first_line
 
 
@@ -443,8 +555,34 @@ def _short_model_name(value: str) -> str:
 _MD_INDENT = 4  # left-pad columns for assistant Markdown output
 
 
+def _pre_wrap(text: str, width: int) -> str:
+    """Insert newlines so each line fits within *width* terminal cells.
+
+    Uses the same CJK-aware wrapping as ``_fill_text`` but without adding
+    indentation.  Wrapped breaks use Markdown hard line-break syntax (two
+    trailing spaces + ``\\n``) so Rich renders each segment on its own line
+    without paragraph spacing.
+    """
+    if not text or width < _MIN_CONTENT_WIDTH:
+        return text
+    wrapped = _fill_text(text, width=width, initial_indent="", subsequent_indent="")
+    return wrapped.replace("\n", "  \n")
+
+
+def _md_content_width() -> int:
+    """Available width for Markdown content after accounting for left indent."""
+    tw = _CONSOLE.size.width
+    if tw is None or tw < _MIN_CONSOLE_WIDTH:
+        tw = _MIN_CONSOLE_WIDTH
+    return max(_MIN_CONTENT_WIDTH, tw - _MD_INDENT)
+
+
 def _padded_md(text: str) -> Padding:
-    return Padding(Markdown(text or " "), pad=(0, 0, 0, _MD_INDENT))
+    # Pre-wrap so CJK paragraphs (no spaces) don't overflow the terminal.
+    return Padding(
+        Markdown(_pre_wrap(text or " ", _md_content_width())),
+        pad=(0, 0, 0, _MD_INDENT),
+    )
 
 
 def make_live_markdown(text: str) -> Live:

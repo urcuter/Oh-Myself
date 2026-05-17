@@ -44,6 +44,27 @@ _FOUNDATION_SYSTEM_PROMPT = """\
 - coping.md 和 strategy.md 位于数据目录（~/.ohmyself/），是 [user] 个人维护的参考文件。
 - 你可以读取这些文件来提供建议，但不得在未获得 [user] 明确指示的情况下修改或创建它们。
 - 如果 [user] 明确要求你更新这些文件，你才可以使用 write_file 或 edit_file 工具操作，且系统会二次确认。
+
+关于长期策略（strategy.md）的讨论与修改：
+- 长期策略是 [user] 未来发展的方向性指引，所有目标设定和计划制定都应依据该策略。
+- 当 [user] 说"我想修改长期策略"或表达类似意图时，你应进入协作讨论模式：
+  1. 先读取当前 strategy.md 的内容，呈现给 [user]
+  2. 了解 [user] 想要修改的方向和原因
+  3. 帮助 [user] 按以下三条准则审视策略内容：
+     a. **未来趋势性**：该策略是否代表了未来长期的发展趋势？是否经得起时间考验？反思它真的能够代表未来发展趋势吗？
+     b. **基础性**：该策略是否聚焦于基础性能力或方向（如编程、语言、思维框架等）？基础性的东西具有长期复利价值，不会因短期潮流变化而失效。
+     c. **可实现性**：该策略是否可行？实施过程中可能遇到哪些困难？有哪些解决方法？需要什么资源或条件？
+  4. 讨论达成共识后，由你整理出更新后的完整策略文本，经 [user] 确认后写入 strategy.md
+- 在 [user] 明确同意前，不得自行修改 strategy.md。写入操作会触发系统二次确认。
+
+关于长期日程计划（long_plan.json）：
+- 长期日程计划是将长期策略和活跃目标转化为基于日历的分阶段执行计划。
+- 计划存储在数据目录的 long_plan.json 文件中，包含阶段（Phase）、里程碑（Milestone）和执行记录。
+- 你会在系统提示中看到「你的长期日程计划」section（如果用户已启用），其中包含当前阶段、近期里程碑和节奏概况。
+- 你可以读取 long_plan.json 来了解完整计划，但修改计划需要通过 /longplan 命令或用户明确指示。
+- 在每日计划生成和审视时，应主动参考长期计划中的里程碑，将本周应推进的事项纳入每日计划。
+- 当发现用户进度持续超前或滞后时，可建议用户使用 /longplan review 或 /longplan adapt 进行节奏调整。
+- 当用户表示想"追踪今日进展"或"审视长期计划"时，引导其使用对应的 /longplan 命令。
 """
 
 _MODEL_PROFILE_FILENAME = "model_profile.md"
@@ -169,10 +190,16 @@ def build_system_prompt(
     env: EnvironmentInfo | None = None,
     cwd: str | None = None,
     goal_context: str | None = None,
+    strategy_content: str | None = None,
+    long_plan_content: str | None = None,
 ) -> str:
     resolved_env = env or get_environment_info(cwd=cwd)
     layered = _build_layered_prompt(normalize_user_system_prompt(custom_prompt))
     result = f"{layered}\n\n{_format_environment_section(resolved_env)}"
+    if strategy_content and strategy_content.strip():
+        result = f"{result}\n\n## 你的长期策略\n\n{strategy_content.strip()}"
+    if long_plan_content and long_plan_content.strip():
+        result = f"{result}\n\n{long_plan_content.strip()}"
     if goal_context:
         result = f"{result}\n\n{goal_context}"
     return result

@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oh-Myself 系统提示词架构</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #f5f7fa 0%, #e4edf5 100%);
+            color: #333;
+            line-height: 1.6;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+            padding: 40px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .container::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #4a90e2, #7b68ee, #20b2aa);
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eaeaea;
+        }
+        
+        h1 {
+            color: #2c3e50;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #2c3e50, #4a90e2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .subtitle {
+            color: #7f8c8d;
+            font-size: 1.2rem;
+            margin-bottom: 20px;
+        }
+        
+        .meta-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            border-left: 4px solid #4a90e2;
+        }
+        
+        .meta-info p {
+            margin: 5px 0;
+            color: #555;
+        }
+        
+        .meta-info strong {
+            color: #2c3e50;
+        }
+        
+        section {
+            margin-bottom: 50px;
+        }
+        
+        h2 {
+            color: #2c3e50;
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #eaeaea;
+            position: relative;
+        }
+        
+        h2::after {
+            content: '';
+            position: absolute;
+            bottom: -2px;
+            left: 0;
+            width: 80px;
+            height: 2px;
+            background: #4a90e2;
+        }
+        
+        h3 {
+            color: #34495e;
+            font-size: 1.4rem;
+            margin: 25px 0 15px 0;
+        }
+        
+        .architecture-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 40px 0;
+        }
+        
+        .layer {
+            width: 90%;
+            max-width: 800px;
+            padding: 25px;
+            margin: 15px 0;
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+            position: relative;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            border: 1px solid #e0e0e0;
+        }
+        
+        .layer:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.12);
+        }
+        
+        .layer-1 {
+            background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+            border-left: 6px solid #1976d2;
+        }
+        
+        .layer-2 {
+            background: linear-gradient(135deg, #f3e5f5, #e1bee7);
+            border-left: 6px solid #7b1fa2;
+            margin-left: 20px;
+            width: 85%;
+        }
+        
+        .layer-3 {
+            background: linear-gradient(135deg, #e8f5e9, #c8e6c9);
+            border-left: 6px solid #388e3c;
+            margin-left: 40px;
+            width: 80%;
+        }
+        
+        .layer-env {
+            background: linear-gradient(135deg, #fff3e0, #ffe0b2);
+            border-left: 6px solid #f57c00;
+            margin-left: 20px;
+            width: 85%;
+        }
+        
+        .layer-goal {
+            background: linear-gradient(135deg, #fce4ec, #f8bbd9);
+            border-left: 6px solid #c2185b;
+            margin-left: 40px;
+            width: 80%;
+        }
+        
+        .layer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .layer-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        
+        .layer-status {
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        
+        .status-required {
+            background: #e8f5e9;
+            color: #388e3c;
+        }
+        
+        .status-optional {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+        
+        .status-conditional {
+            background: #fce4ec;
+            color: #c2185b;
+        }
+        
+        .layer-content {
+            color: #444;
+            margin-bottom: 15px;
+        }
+        
+        .layer-source {
+            font-size: 0.9rem;
+            color: #666;
+            font-style: italic;
+            border-top: 1px dashed #ddd;
+            padding-top: 10px;
+        }
+        
+        .code-ref {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Consolas', monospace;
+            font-size: 0.9rem;
+            color: #d63384;
+        }
+        
+        .data-flow {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 25px;
+            margin: 30px 0;
+            border: 1px solid #e0e0e0;
+        }
+        
+        .flow-step {
+            display: flex;
+            align-items: center;
+            margin: 20px 0;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.05);
+        }
+        
+        .flow-number {
+            background: #4a90e2;
+            color: white;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            margin-right: 20px;
+            flex-shrink: 0;
+        }
+        
+        .flow-desc {
+            flex: 1;
+        }
+        
+        .flow-arrow {
+            text-align: center;
+            color: #7b68ee;
+            font-size: 1.5rem;
+            margin: 10px 0;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 25px 0;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        
+        th {
+            background: linear-gradient(90deg, #4a90e2, #7b68ee);
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+        }
+        
+        td {
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+        
+        tr:hover {
+            background: #f0f7ff;
+        }
+        
+        .file-path {
+            font-family: 'Consolas', monospace;
+            color: #2c3e50;
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        
+        .note {
+            background: #fff8e1;
+            border-left: 4px solid #ffb300;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 0 8px 8px 0;
+        }
+        
+        footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            color: #7f8c8d;
+            font-size: 0.9rem;
+        }
+        
+        .diagram-container {
+            text-align: center;
+            margin: 30px 0;
+        }
+        
+        .diagram {
+            max-width: 100%;
+            height: auto;
+            border-radius: 10px;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+            }
+            
+            h1 {
+                font-size: 2rem;
+            }
+            
+            .layer {
+                width: 100%;
+                margin-left: 0 !important;
+            }
+            
+            .flow-step {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            
+            .flow-number {
+                margin-bottom: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Oh-Myself 系统提示词架构</h1>
+            <p class="subtitle">3 层核心 + 2 扩展段的智能体提示词系统</p>
+            <div class="meta-info">
+                <p><strong>项目路径：</strong>E:\我的核心能力\AI智能体\Oh-Myself</p>
+                <p><strong>核心文件：</strong><span class="file-path">src/ohmyself/prompts/system_prompt.py</span></p>
+                <p><strong>构建函数：</strong><code>build_system_prompt()</code> (第154行)</p>
+                <p><strong>分析时间：</strong>2026年5月8日</p>
+            </div>
+        </header>
+        
+        <section>
+            <h2>📊 系统提示词层级架构</h2>
+            <p>Oh-Myself 采用层叠式系统提示词设计，由 <code>build_system_prompt()</code> 函数动态构建，最终发送给 AI API。</p>
+            
+            <div class="architecture-container">
+                <div class="layer layer-1">
+                    <div class="layer-header">
+                        <div class="layer-title">Layer 1: Base Prompt (基础提示词)</div>
+                        <div class="layer-status status-required">始终存在</div>
+                    </div>
+                    <div class="layer-content">
+                        <p><strong>核心身份：</strong>"你是 [user] 的长期成长助手"</p>
+                        <p><strong>语言：</strong>中文</p>
+                        <p><strong>内容：</strong>定义助手身份、工作原则、协作方式、回应风格、提问引导策略</p>
+                        <p><strong>特点：</strong>强调独立思考、反向思考、问题本质识别，避免情绪化反应</p>
+                    </div>
+                    <div class="layer-source">
+                        <strong>来源：</strong> <span class="code-ref">_FOUNDATION_SYSTEM_PROMPT</span> (第6-42行)
+                    </div>
+                </div>
+                
+                <div class="layer layer-2">
+                    <div class="layer-header">
+                        <div class="layer-title">Layer 2: User Prompt (用户自定义提示词)</div>
+                        <div class="layer-status status-optional">可选</div>
+                    </div>
+                    <div class="layer-content">
+                        <p><strong>配置方式：</strong></p>
+                        <ul>
+                            <li>CLI 参数: <code>--system-prompt</code> 或 <code>-s</code></li>
+                            <li>Settings 文件: <code>system_prompt</code> 字段</li>
+                        </ul>
+                        <p><strong>处理：</strong>通过 <code>normalize_user_system_prompt()</code> 函数处理，移除可能存在的旧版基础提示词</p>
+                    </div>
+                    <div class="layer-source">
+                        <strong>来源：</strong> <span class="code-ref">Settings.system_prompt</span> 或 CLI 参数
+                    </div>
+                </div>
+                
+                <div class="layer layer-3">
+                    <div class="layer-header">
+                        <div class="layer-title">Layer 3: Model Profile + User Profile (模型/用户画像)</div>
+                        <div class="layer-status status-optional">可选</div>
+                    </div>
+                    <div class="layer-content">
+                        <p><strong>Model Profile：</strong>AI 模型的行为指令，来自 <code>{OHMYSELF_HOME}/memory/model_profile.md</code></p>
+                        <p><strong>User Profile：</strong>用户的持久化偏好/工作风格，来自 <code>{OHMYSELF_HOME}/memory/user_profile.md</code></p>
+                        <p><strong>管理：</strong>通过 <code>/memory</code> 命令管理</p>
+                    </div>
+                    <div class="layer-source">
+                        <strong>来源：</strong> 本地文件系统动态加载
+                    </div>
+                </div>
+                
+                <div class="layer layer-env">
+                    <div class="layer-header">
+                        <div class="layer-title"># Environment (环境信息)</div>
+                        <div class="layer-status status-required">始终追加</div>
+                    </div>
+                    <div class="layer-content">
+                        <p>包含当前执行环境的详细信息：</p>
+                        <ul>
+                            <li>操作系统、Shell 类型</li>
+                            <li>当前工作目录 (CWD)</li>
+                            <li>当前日期</li>
+                            <li>Python 版本、Git 信息</li>
+                            <li>是否为 Git 仓库</li>
+                        </ul>
+                    </div>
+                    <div class="layer-source">
+                        <strong>来源：</strong> <span class="code-ref">_format_environment_section()</span> (第48-66行)
+                    </div>
+                </div>
+                
+                <div class="layer layer-goal">
+                    <div class="layer-header">
+                        <div class="layer-title"># Goal Context (目标上下文)</div>
+                        <div class="layer-status status-conditional">目标模式下追加</div>
+                    </div>
+                    <div class="layer-content">
+                        <p><strong>内容：</strong></p>
+                        <ul>
+                            <li>当前专注的目标主题</li>
+                            <li>目标进度、截止时间</li>
+                            <li>目标记忆 (AI 笔记、用户偏好、上下文)</li>
+                            <li>最近会话摘要</li>
+                            <li>当前模式指令</li>
+                        </ul>
+                    </div>
+                    <div class="layer-source">
+                        <strong>来源：</strong> <span class="code-ref">GoalAgentContext.build_goal_context_prompt()</span> (第89-121行)
+                    </div>
+                </div>
+            </div>
+        </section>
+        
+        <section>
+            <h2>🔗 数据流与代码路径</h2>
+            <div class="data-flow">
+                <div class="flow-step">
+                    <div class="flow-number">1</div>
+                    <div class="flow-desc">
+                        <h3>CLI / Settings 输入</h3>
+                        <p>用户通过 <code>--system-prompt</code> 参数或 Settings 文件提供自定义提示词</p>
+                        <p><span class="file-path">src/ohmyself/cli.py:1492</span> - CLI 参数定义</p>
+                        <p><span class="file-path">src/ohmyself/config/settings.py:63</span> - Settings 模型字段</p>
+                    </div>
+                </div>
+                
+                <div class="flow-arrow">↓</div>
+                
+                <div class="flow-step">
+                    <div class="flow-number">2</div>
+                    <div class="flow-desc">
+                        <h3>build_system_prompt() 构建</h3>
+                        <p>在 <code>runtime.py</code> 中调用，传入自定义提示词、环境信息、目标上下文</p>
+                        <p><span class="file-path">src/ohmyself/prompts/system_prompt.py:154</span> - 主构建函数</p>
+                        <p><span class="file-path">src/ohmyself/prompts/system_prompt.py:98</span> - <code>_build_layered_prompt()</code> 层叠逻辑</p>
+                    </div>
+                </div>
+                
+                <div class="flow-arrow">↓</div>
+                
+                <div class="flow-step">
+                    <div class="flow-number">3</div>
+                    <div class="flow-desc">
+                        <h3>QueryEngine 持有</h3>
+                        <p>构建好的提示词存储在 <code>QueryEngine._system_prompt</code> 属性中</p>
+                        <p><span class="file-path">src/ohmyself/engine/query_engine.py:35</span> - 构造函数接收</p>
+                        <p><span class="file-path">src/ohmyself/engine/query_engine.py:83</span> - <code>set_system_prompt()</code> 方法</p>
+                    </div>
+                </div>
+                
+                <div class="flow-arrow">↓</div>
+                
+                <div class="flow-step">
+                    <div class="flow-number">4</div>
+                    <div class="flow-desc">
+                        <h3>QueryContext 传递</h3>
+                        <p>通过 <code>QueryContext.system_prompt</code> 字段传递给查询处理逻辑</p>
+                        <p><span class="file-path">src/ohmyself/engine/query.py:46</span> - QueryContext 数据类</p>
+                        <p><span class="file-path">src/ohmyself/engine/query.py:234</span> - 存入 ToolExecutionContext.metadata</p>
+                    </div>
+                </div>
+                
+                <div class="flow-arrow">↓</div>
+                
+                <div class="flow-step">
+                    <div class="flow-number">5</div>
+                    <div class="flow-desc">
+                        <h3>API 请求格式化</h3>
+                        <p>转换为 OpenAI 或 Anthropic API 所需的格式</p>
+                        <p><span class="file-path">src/ohmyself/api/openai_client.py:99</span> - OpenAI: <code>{role: "system", content: ...}</code></p>
+                        <p><span class="file-path">src/ohmyself/api/anthropic_client.py:107</span> - Anthropic: <code>params["system"] = ...</code></p>
+                    </div>
+                </div>
+            </div>
+        </section>
+        
+        <section>
+            <h2>🔄 子智能体继承机制</h2>
+            <div class="note">
+                <p><strong>关键设计：</strong>子智能体继承父智能体的<strong>完整层叠系统提示词</strong>，确保行为一致性。</p>
+            </div>
+            
+            <div class="flow-step">
+                <div class="flow-number">1</div>
+                <div class="flow-desc">
+                    <h3>父智能体传递</h3>
+                    <p>父智能体的系统提示词通过 <code>ToolExecutionContext.metadata["system_prompt"]</code> 传递</p>
+                    <p><span class="file-path">src/ohmyself/engine/query.py:234</span> - 设置 metadata</p>
+                </div>
+            </div>
+            
+            <div class="flow-arrow">↓</div>
+            
+            <div class="flow-step">
+                <div class="flow-number">2</div>
+                <div class="flow-desc">
+                    <h3>子智能体提取</h3>
+                    <p><code>delegate_task</code> 工具从 metadata 中提取系统提示词</p>
+                    <p><span class="file-path">src/ohmyself/tools/subagent_tool.py:82</span> - 提取 system_prompt</p>
+                </div>
+            </div>
+            
+            <div class="flow-arrow">↓</div>
+            
+            <div class="flow-step">
+                <div class="flow-number">3</div>
+                <div class="flow-desc">
+                    <h3>创建子 QueryContext</h3>
+                    <p>使用<strong>相同的系统提示词</strong>创建子智能体的 QueryContext</p>
+                    <p><span class="file-path">src/ohmyself/tools/subagent_tool.py:117</span> - 传递给子智能体</p>
+                </div>
+            </div>
+            
+            <div class="flow-arrow">↓</div>
+            
+            <div class="flow-step">
+                <div class="flow-number">4</div>
+                <div class="flow-desc">
+                    <h3>行为一致性</h3>
+                    <p>子智能体获得与父智能体完全相同的层叠提示词，确保：</p>
+                    <ul>
+                        <li>相同的核心身份 (Layer 1)</li>
+                        <li>相同的用户自定义指令 (Layer 2)</li>
+                        <li>相同的模型/用户画像 (Layer 3)</li>
+                        <li>相同的环境上下文</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+        
+        <section>
+            <h2>📋 独立系统提示词（非层叠）</h2>
+            <p>以下服务使用独立的系统提示词进行一次性 API 调用，<strong>不参与</strong>主智能体的层叠提示词构建：</p>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>服务</th>
+                        <th>文件位置</th>
+                        <th>用途</th>
+                        <th>调用时机</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>目标记忆更新</strong></td>
+                        <td><span class="file-path">services/goal_memory.py:17</span></td>
+                        <td>分析对话内容，更新目标记忆文件 (ai_notes.md, user_prefs.md, context.md)</td>
+                        <td>目标相关对话结束时</td>
+                    </tr>
+                    <tr>
+                        <td><strong>每日进度评估</strong></td>
+                        <td><span class="file-path">services/goal_progress.py:17</span></td>
+                        <td>评估昨日计划完成情况，生成进度报告</td>
+                        <td>每日目标进度检查时</td>
+                    </tr>
+                    <tr>
+                        <td><strong>用户画像生成</strong></td>
+                        <td><span class="file-path">services/user_profile.py:9</span></td>
+                        <td>从对话证据中提取用户偏好，生成/更新持久化用户画像</td>
+                        <td>检测到用户行为模式变化时</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+        
+        <section>
+            <h2>📁 文件系统结构</h2>
+            <div class="note">
+                <p><strong>提示词相关文件位置：</strong></p>
+            </div>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>路径</th>
+                        <th>类型</th>
+                        <th>描述</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="file-path">src/ohmyself/prompts/system_prompt.py</span></td>
+                        <td>核心代码</td>
+                        <td>系统提示词构建器，包含所有层叠逻辑</td>
+                    </tr>
+                    <tr>
+                        <td><span class="file-path">src/ohmyself/prompts/__init__.py</span></td>
+                        <td>模块导出</td>
+                        <td>导出 <code>build_system_prompt</code> 函数</td>
+                    </tr>
+                    <tr>
+                        <td><span class="file-path">src/ohmyself/prompts/environment.py</span></td>
+                        <td>数据类</td>
+                        <td><code>EnvironmentInfo</code> 数据类</td>
+                    </tr>
+                    <tr>
+                        <td><span class="file-path">{OHMYSELF_HOME}/memory/model_profile.md</span></td>
+                        <td>配置文件</td>
+                        <td>Layer 3: 模型行为配置文件</td>
+                    </tr>
+                    <tr>
+                        <td><span class="file-path">{OHMYSELF_HOME}/memory/user_profile.md</span></td>
+                        <td>配置文件</td>
+                        <td>Layer 3 Memory: 用户画像配置文件</td>
+                    </tr>
+                    <tr>
+                        <td><span class="file-path">tmp-home-prompt-*/</span></td>
+                        <td>测试目录</td>
+                        <td>测试用的 Layer 3 配置文件夹具</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+        
+        <section>
+            <h2>🎯 设计哲学与特点</h2>
+            <div class="note">
+                <p><strong>核心设计原则：</strong>层叠式、可配置、可继承、环境感知</p>
+            </div>
+            
+            <h3>1. 层叠式设计 (Layered Design)</h3>
+            <ul>
+                <li><strong>分离关注点：</strong>基础身份、用户自定义、个性化配置分离</li>
+                <li><strong>优先级明确：</strong>Layer 1 > Layer 2 > Layer 3，上层可覆盖下层</li>
+                <li><strong>可组合性：</strong>各层独立存在，可按需组合</li>
+            </ul>
+            
+            <h3>2. 动态配置 (Dynamic Configuration)</h3>
+            <ul>
+                <li><strong>运行时加载：</strong>Layer 3 从文件系统动态加载</li>
+                <li><strong>多配置源：</strong>CLI 参数、Settings 文件、本地配置文件</li>
+                <li><strong>环境感知：</strong>自动注入环境信息，增强上下文感知</li>
+            </ul>
+            
+            <h3>3. 继承一致性 (Inheritance Consistency)</h3>
+            <ul>
+                <li><strong>完整继承：</strong>子智能体获得父智能体的完整提示词</li>
+                <li><strong>行为一致：</strong>确保多智能体协作时行为一致</li>
+                <li><strong>上下文传递：</strong>目标上下文、环境信息完整传递</li>
+            </ul>
+            
+            <h3>4. 模块化服务 (Modular Services)</h3>
+            <ul>
+                <li><strong>独立提示词：</strong>特定服务使用专用提示词</li>
+                <li><strong>单一职责：</strong>每个服务提示词专注于特定任务</li>
+                <li><strong>不污染主流程：</strong>服务提示词不影响主智能体行为</li>
+            </ul>
+        </section>
+        
+        <footer>
+            <p>📄 文档生成时间: 2026年5月8日 | Oh-Myself 架构分析文档</p>
+            <p>🔗 相关文件: <span class="file-path">docs/architecture/系统提示词架构.html</span></p>
+            <p>📁 项目根目录: <span class="file-path">E:\我的核心能力\AI智能体\Oh-Myself</span></p>
+        </footer>
+    </div>
+</body>
+</html>

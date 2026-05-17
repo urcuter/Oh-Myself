@@ -14,6 +14,8 @@ from ohmyself.engine.messages import ConversationMessage
 from ohmyself.engine.query_engine import QueryEngine
 from ohmyself.permissions import PermissionChecker, PermissionMode
 from ohmyself.prompts.system_prompt import build_system_prompt
+from ohmyself.services.long_plan import LongPlanService
+from ohmyself.services.strategy import read_strategy
 from ohmyself.tools import create_tool_registry
 
 if TYPE_CHECKING:
@@ -47,7 +49,15 @@ class OhMyRuntime:
         goal_context_prompt = ""
         if self.goal_context is not None and self.goal_context.active_goal_id is not None:
             goal_context_prompt = self.goal_context.build_goal_context_prompt()
-        self.engine.set_system_prompt(build_system_prompt(settings.system_prompt, cwd=self.cwd, goal_context=goal_context_prompt or None))
+        strategy_content = read_strategy()
+        long_plan_content = self._get_long_plan_content()
+        self.engine.set_system_prompt(build_system_prompt(
+            settings.system_prompt,
+            cwd=self.cwd,
+            goal_context=goal_context_prompt or None,
+            strategy_content=strategy_content,
+            long_plan_content=long_plan_content or None,
+        ))
 
     def current_model(self) -> str:
         settings = self.current_settings()
@@ -61,6 +71,15 @@ class OhMyRuntime:
 
     def current_effort(self) -> str:
         return self.current_settings().effort
+
+    def _get_long_plan_content(self) -> str:
+        try:
+            service = LongPlanService()
+            if service.is_enabled():
+                return service.format_for_system_prompt()
+        except Exception:
+            pass
+        return ""
 
     def switch_model(self, model_name: str) -> str:
         self.settings_overrides["model"] = model_name
@@ -230,13 +249,26 @@ async def build_runtime(
     tool_registry = create_tool_registry()
     session_id = uuid4().hex[:12]
     session_started_at = datetime.now().astimezone()
+    long_plan_content = ""
+    try:
+        lp_service = LongPlanService()
+        if lp_service.is_enabled():
+            long_plan_content = lp_service.format_for_system_prompt()
+    except Exception:
+        pass
+
     engine = QueryEngine(
         api_client=resolved_api_client,
         tool_registry=tool_registry,
         permission_checker=PermissionChecker(settings.permission),
         cwd=resolved_cwd,
         model=profile.resolved_model,
-        system_prompt=build_system_prompt(settings.system_prompt, cwd=resolved_cwd),
+        system_prompt=build_system_prompt(
+            settings.system_prompt,
+            cwd=resolved_cwd,
+            strategy_content=read_strategy(),
+            long_plan_content=long_plan_content or None,
+        ),
         max_tokens=settings.max_tokens,
         max_turns=settings.max_turns,
         effort=settings.effort,

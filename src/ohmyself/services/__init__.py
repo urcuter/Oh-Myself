@@ -92,6 +92,16 @@ from ohmyself.services.strategy import (
     read_strategy,
     update_strategy,
 )
+from ohmyself.services.long_plan import (
+    DailyExecutionRecord,
+    LongPlan,
+    LongPlanConfig,
+    LongPlanService,
+    Milestone,
+    Phase,
+    RhythmProfile,
+    SpecialDate,
+)
 
 __all__ = [
     "AI_NOTES_FILENAME",
@@ -176,4 +186,12 @@ __all__ = [
     "save_status",
     "save_status_fields",
     "update_strategy",
+    "DailyExecutionRecord",
+    "LongPlan",
+    "LongPlanConfig",
+    "LongPlanService",
+    "Milestone",
+    "Phase",
+    "RhythmProfile",
+    "SpecialDate",
 ]

@@ -6,7 +6,7 @@ import json
 import platform
 import shlex
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import typer
@@ -54,6 +54,7 @@ from ohmyself.services import (
     read_today_plan,
     save_session_snapshot,
     save_user_profile,
+    set_goal_linked_dir,
     stop_goal,
     update_goal_progress,
 )
@@ -97,6 +98,7 @@ from ohmyself.services.strategy import (
     read_strategy,
     update_strategy,
 )
+from ohmyself.services.long_plan import LongPlanService
 from ohmyself.terminal_ui import (
     GOAL_CYCLE_SENTINEL,
     RestoredSessionSummary,
@@ -652,6 +654,13 @@ def _build_plan_prompt() -> str:
     strategy_context = format_strategy_for_prompt()
     status_context = format_recent_status_for_prompt(7)
     coping_context = format_coping_for_prompt()
+    long_plan_context = ""
+    try:
+        lp = LongPlanService()
+        if lp.is_enabled():
+            long_plan_context = lp.format_for_daily_plan()
+    except Exception:
+        pass
     return build_plan_organize_prompt(
         goal_context=goal_context,
         active_goal_count=len(active_goals),
@@ -659,6 +668,7 @@ def _build_plan_prompt() -> str:
         strategy_context=strategy_context,
         status_context=status_context,
         coping_context=coping_context,
+        long_plan_context=long_plan_context,
     )
 
 
@@ -1048,6 +1058,360 @@ def _handle_schedule_os_command(scheduler: SchedulerService, instruction: str) -
     print_error(f"Unknown os subcommand: {instruction}. Use: add, list, remove")
 
 
+# ---------------------------------------------------------------------------
+# /longplan command
+# ---------------------------------------------------------------------------
+
+
+_LONGPLAN_SETUP_PROMPT = """\
+你正在帮助用户设定长期日程计划。请通过对话了解以下偏好：
+
+1. **计划周期**：计划覆盖多长时间？（1个月 / 3个月 / 6个月 / 1年）
+2. **工作/休息安排**：每周哪几天是工作日？哪几天休息？（如：周一至周五工作，周六日休息）
+3. **每日专注时段**：每天什么时间段适合专注工作？（如：9:00-18:00）
+4. **审视频率**：多久审视一次计划进展？（每周 / 每两周 / 每月）
+5. **自动调整**：是否允许AI根据执行数据自动建议节奏调整？
+
+在了解用户偏好后，请将配置写入 `{config_path}`，JSON 格式如下：
+
+```json
+{{
+  "config": {{
+    "enabled": true,
+    "horizon_months": 3,
+    "work_days": [1, 2, 3, 4, 5],
+    "daily_focus_start": 9,
+    "daily_focus_end": 18,
+    "review_cadence": "weekly",
+    "auto_adapt": true,
+    "special_dates": [],
+    "created_at": "{now}",
+    "updated_at": "{now}"
+  }},
+  "phases": [],
+  "execution_history": [],
+  "rhythm_profile": null,
+  "last_reviewed_at": ""
+}}
+```
+
+（数字 1-7 对应周一到周日）
+
+使用 write_file 工具写入，UTF-8 编码。写完后告知用户设定完成，可使用 /longplan generate 生成计划。"""
+
+_LONGPLAN_GENERATE_PROMPT = """\
+你正在为用户生成长日程计划。请根据以下信息，提出一个分阶段执行计划。
+
+{long_context}
+
+请按以下步骤操作：
+
+1. 分析策略和目标的关联，确定合理的阶段划分
+2. 提出计划草案，与用户讨论。每个阶段应包含：
+   - 阶段名称、起止日期、主题
+   - 里程碑名称、目标日期、成功标准
+   - 关联到哪个已有目标（如有）
+3. **近期2周内**的里程碑需要具体到具体日期和详细标准
+4. **远期阶段**可以只保留阶段名称和主题方向，里程碑可以粗粒度
+5. 用户确认后，将完整计划写入 `{plan_path}`，格式如下：
+
+```json
+{{
+  "config": {existing_config},
+  "phases": [
+    {{
+      "id": "<生成12位id>",
+      "name": "Phase 1: 阶段名称",
+      "start_date": "YYYY-MM-DD",
+      "end_date": "YYYY-MM-DD",
+      "theme": "阶段主题描述",
+      "original_start_date": "YYYY-MM-DD",
+      "original_end_date": "YYYY-MM-DD",
+      "status": "active",
+      "milestones": [
+        {{
+          "id": "<生成12位id>",
+          "name": "里程碑名称",
+          "target_date": "YYYY-MM-DD",
+          "original_target_date": "YYYY-MM-DD",
+          "success_criteria": "完成标准",
+          "status": "pending",
+          "linked_goal_id": null
+        }}
+      ]
+    }}
+  ],
+  "execution_history": [],
+  "rhythm_profile": null,
+  "last_reviewed_at": ""
+}}
+```
+
+使用 write_file 工具写入，UTF-8 编码。确认文件已保存后，向用户简要总结计划内容。"""
+
+_LONGPLAN_TRACK_PROMPT = """\
+你正在追踪今日长期计划的执行情况。请根据以下信息评估今日完成度。
+
+{today_context}
+
+请完成以下工作：
+1. 对比今日应推进的里程碑 vs 实际完成情况
+2. 给出今日完成度评分（0.0 ~ 1.0）
+3. 若未能完成，分析阻碍原因
+4. 用一句话总结今日执行情况
+
+然后将执行记录追加到 `{plan_path}` 文件的 `execution_history` 数组中，格式：
+
+```json
+{{
+  "date": "{today}",
+  "planned_milestone_ids": ["ms_1", "ms_2"],
+  "completed_milestone_ids": ["ms_1"],
+  "partial_milestone_ids": ["ms_2"],
+  "completion_score": 0.5,
+  "blocker": "阻碍原因（如有）",
+  "energy_note": "从今日状态提取的摘要",
+  "ai_summary": "今日执行一句话总结"
+}}
+```
+
+**重要**：你需要读取当前的 `{plan_path}` 文件，修改其中的 `execution_history` 数组（追加新记录），然后用 write_file 写回完整文件。不要覆盖已有的 phases 和 config。
+
+完成后告知用户今日追踪结果。"""
+
+_LONGPLAN_REVIEW_PROMPT = """\
+你正在进行长期计划的定期审视。请综合以下信息进行全面分析。
+
+{review_context}
+
+请依次完成：
+
+### 1. 进度对比
+- 逐阶段对比当前进度 vs 里程碑计划
+- 标记已完成、进行中、延期的里程碑
+- 计算整体进度偏差
+
+### 2. 节奏分析
+- 基于执行历史，评估用户的执行节奏
+- 识别最高效/最低效的工作日
+- 判断趋势（提升中 / 稳定 / 下降中）
+
+### 3. 调整建议
+- 持续超前（≥20%）→ 建议收紧后续里程碑日期
+- 持续滞后（≥20%）→ 建议延长截止日期或拆分里程碑
+- 持续滞后（≥50%）→ 建议重新评估计划可行性
+- 趋势下降 → 建议降低近期里程碑密度
+- 某工作日持续低效 → 建议调整 work_days 配置
+- **所有调整建议需用户确认后才能执行**
+
+### 4. 滚动细化
+- 将未来2周的远期阶段细化为具体里程碑
+- 更新 phases 数据
+
+所有分析和建议先呈现给用户。用户确认调整后，将更新后的完整 JSON 写入 `{plan_path}`。
+使用 write_file 工具，UTF-8 编码。"""
+
+_LONGPLAN_ADAPT_PROMPT = """\
+你正在分析用户长期计划的执行节奏。请根据执行数据给出节奏诊断和调整建议。
+
+{adapt_context}
+
+请完成：
+
+1. **节奏诊断**：当前速度、与计划的偏差天数、持续趋势
+2. **工作日效率分析**：哪些天最高效、哪些天最低效
+3. **调整建议**（具体阈值同审视流程）：
+   - 超前 → 收紧
+   - 滞后 → 延长或缩减
+   - 趋势下降 → 降低密度
+   - 工作日持续低效 → 建议调整 work_days
+4. **产能建议**：基于历史数据，建议每日合理推进的里程碑数量
+
+所有建议需用户确认。确认后将 `rhythm_profile` 更新到 `{plan_path}`：
+
+```json
+{{
+  "avg_completion_rate": 0.0,
+  "weekly_throughput": 0.0,
+  "best_working_days": [],
+  "worst_working_days": [],
+  "typical_daily_capacity": 0.0,
+  "delay_days_accumulated": 0,
+  "trend": "stable",
+  "last_analyzed_at": "{now}",
+  "analysis_narrative": "AI生成的分析叙述"
+}}
+```
+
+读取 `{plan_path}`，更新 `rhythm_profile` 字段，写回完整文件。完成后告知用户分析结果。"""
+
+
+def _build_longplan_context(service: LongPlanService) -> str:
+    """Build comprehensive context for long plan prompts."""
+    from ohmyself.services.strategy import read_strategy
+    from ohmyself.services.goal import format_goals_markdown, list_goals
+
+    parts: list[str] = []
+
+    strategy = read_strategy()
+    if strategy.strip():
+        parts.append(f"## 长期策略\n\n{strategy.strip()}")
+
+    active = [g for g in list_goals() if g.status == "active"]
+    if active:
+        parts.append(f"## 活跃目标\n\n{format_goals_markdown(active)}")
+
+    phases = service.get_phases()
+    if phases:
+        lines = ["## 现有阶段计划"]
+        for p in phases:
+            lines.append(f"- {p.name} ({p.start_date} ~ {p.end_date}) [{p.status}]")
+            for m in p.milestones:
+                ms = {"pending": "○", "in_progress": "●", "completed": "✓"}.get(m.status, "?")
+                lines.append(f"  {ms} [{m.target_date}] {m.name}")
+        parts.append("\n".join(lines))
+
+    history = service.get_execution_history()
+    if history:
+        lines = ["## 执行历史"]
+        for r in history[-14:]:
+            lines.append(f"- {r.date}: 完成度 {r.completion_score:.0%} | {r.ai_summary}")
+        parts.append("\n".join(lines))
+
+    rp = service.get_rhythm_profile()
+    if rp and rp.last_analyzed_at:
+        parts.append(f"## 当前节奏画像\n\n{service.format_rhythm_summary()}")
+
+    return "\n\n".join(parts)
+
+
+async def _handle_longplan_command(
+    longplan_service: LongPlanService,
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+    instruction: str,
+) -> None:
+    cleaned = instruction.strip()
+
+    if not cleaned:
+        print_markdown(longplan_service.format_plan_summary())
+        rp = longplan_service.get_rhythm_profile()
+        if rp and rp.last_analyzed_at:
+            console().print()
+            print_markdown("## 节奏摘要\n\n" + longplan_service.format_rhythm_summary())
+        return
+
+    if cleaned == "on":
+        longplan_service.enable()
+        print_success("长期计划功能已启用。使用 /longplan setup 设定计划参数。")
+        return
+
+    if cleaned == "off":
+        longplan_service.disable()
+        print_success("长期计划功能已关闭。数据保留，可随时使用 /longplan on 重新启用。")
+        return
+
+    if cleaned == "help":
+        help_text = """# /longplan 命令
+- `/longplan` — 查看当前计划和节奏摘要
+- `/longplan on` / `/longplan off` — 启用/关闭长期计划
+- `/longplan setup` — 引导设定（计划周期、工作/休息安排、审视频率）
+- `/longplan generate` — AI 基于策略和目标生成分阶段计划
+- `/longplan track` — 手动触发今日执行追踪
+- `/longplan review` — 定期审视（进度对比 + 节奏分析 + 调整建议 + 滚动细化）
+- `/longplan adapt` — 仅节奏分析与调整（不做滚动细化）"""
+        print_markdown(help_text)
+        return
+
+    if cleaned == "setup":
+        if not longplan_service.is_enabled():
+            print_status("长期计划未启用，自动启用中...")
+            longplan_service.enable()
+        prompt = _LONGPLAN_SETUP_PROMPT.format(
+            config_path=str(get_home_dir() / "long_plan.json"),
+            now=_now_str(),
+        )
+        await _stream_prompt(runtime, prompt, transcript)
+        longplan_service._load()
+        return
+
+    if cleaned == "generate":
+        if not longplan_service.is_enabled():
+            print_error("请先使用 /longplan setup 设定计划参数。")
+            return
+        if not longplan_service.get_config().created_at:
+            print_error("请先使用 /longplan setup 完成初始设定。")
+            return
+        context = _build_longplan_context(longplan_service)
+        existing_config = json.dumps(longplan_service.get_config().to_dict(), ensure_ascii=False)
+        prompt = _LONGPLAN_GENERATE_PROMPT.format(
+            long_context=context,
+            plan_path=str(get_home_dir() / "long_plan.json"),
+            existing_config=existing_config,
+        )
+        await _stream_prompt(runtime, prompt, transcript)
+        longplan_service._load()
+        return
+
+    if cleaned == "track":
+        if not longplan_service.is_enabled():
+            print_error("长期计划未启用。")
+            return
+        today = date.today().isoformat()
+        today_milestones = longplan_service.get_today_milestones()
+        if not today_milestones:
+            print_status("今日无到期里程碑。")
+            return
+        status = get_today_status()
+        context_parts = [f"日期: {today}"]
+        context_parts.append("\n今日应推进的里程碑:")
+        for m in today_milestones:
+            context_parts.append(f"  - [{m.target_date}] {m.name} ({m.status})")
+        if status:
+            context_parts.append(f"\n今日状态:\n{format_today_status_markdown()}")
+        prompt = _LONGPLAN_TRACK_PROMPT.format(
+            today_context="\n".join(context_parts),
+            plan_path=str(get_home_dir() / "long_plan.json"),
+            today=today,
+        )
+        await _stream_prompt(runtime, prompt, transcript)
+        longplan_service._load()
+        return
+
+    if cleaned == "review":
+        if not longplan_service.is_enabled():
+            print_error("长期计划未启用。")
+            return
+        context = _build_longplan_context(longplan_service)
+        prompt = _LONGPLAN_REVIEW_PROMPT.format(
+            review_context=context,
+            plan_path=str(get_home_dir() / "long_plan.json"),
+        )
+        await _stream_prompt(runtime, prompt, transcript)
+        longplan_service._load()
+        return
+
+    if cleaned == "adapt":
+        if not longplan_service.is_enabled():
+            print_error("长期计划未启用。")
+            return
+        context = _build_longplan_context(longplan_service)
+        prompt = _LONGPLAN_ADAPT_PROMPT.format(
+            adapt_context=context,
+            plan_path=str(get_home_dir() / "long_plan.json"),
+            now=_now_str(),
+        )
+        await _stream_prompt(runtime, prompt, transcript)
+        longplan_service._load()
+        return
+
+    print_error(f"未知的 longplan 子命令: {instruction}。使用 /longplan help 查看帮助。")
+
+
+def _now_str() -> str:
+    return datetime.now().astimezone().isoformat()
+
+
 async def _handle_goal_command(
     runtime: OhMyRuntime,
     transcript: SessionTranscriptWriter,
@@ -1127,6 +1491,10 @@ async def _handle_goal_command(
         transcript.record_status("Goal", f"Updated {entry.entry_id} to {entry.progress_percent}%")
         return
 
+    if cleaned.startswith("dir ") or cleaned == "dir":
+        _handle_goal_dir(runtime, transcript, cleaned)
+        return
+
     if cleaned.startswith("done "):
         parts = cleaned.split()
         if len(parts) != 2:
@@ -1185,6 +1553,69 @@ async def _handle_goal_command(
         markdown=format_goals_markdown(),
     )
     transcript.record_status("Goal", f"Added {entry.entry_id} to {entry.path}")
+
+
+def _handle_goal_dir(
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+    cleaned: str,
+) -> None:
+    rest = cleaned[len("dir"):].strip()
+    in_goal = runtime.goal_context is not None and runtime.goal_context.active_goal_id is not None
+
+    if not rest:
+        if in_goal:
+            print_error("Usage: /goal dir [path]  or  /goal dir --clear")
+        else:
+            print_error("Usage: /goal dir [id] [path]  or  /goal dir [id] --clear")
+        return
+
+    has_clear = rest.endswith(" --clear")
+    if has_clear:
+        rest = rest[:-len(" --clear")].strip()
+
+    try:
+        tokens = shlex.split(rest, posix=False)
+    except ValueError:
+        print_error("Invalid quoting in arguments.")
+        return
+
+    if in_goal:
+        goal_id = runtime.goal_context.active_goal_id
+        if has_clear:
+            linked_dir = None
+        elif not tokens:
+            print_error("Usage: /goal dir [path]  or  /goal dir --clear")
+            return
+        else:
+            linked_dir = _normalize_goal_linked_dir(tokens[0], base_cwd=_runtime_base_cwd(runtime))
+    else:
+        if not tokens:
+            print_error("Usage: /goal dir [id] [path]  or  /goal dir [id] --clear")
+            return
+        goal_id = tokens[0]
+        if has_clear:
+            linked_dir = None
+        else:
+            if len(tokens) < 2:
+                print_error("Usage: /goal dir [id] [path]  or  /goal dir [id] --clear")
+                return
+            linked_dir = _normalize_goal_linked_dir(tokens[1], base_cwd=_runtime_base_cwd(runtime))
+
+    try:
+        entry = set_goal_linked_dir(goal_id, linked_dir)
+    except Exception as exc:
+        print_error(f"Failed to set goal linked dir: {exc}")
+        transcript.record_status("Goal", f"Failed to set linked_dir for {goal_id}: {exc}")
+        return
+
+    action = "cleared" if has_clear else f"set to {linked_dir}"
+    print_context_snapshot(
+        f"Goal {entry.entry_id} linked directory {action}.",
+        title="Goals",
+        markdown=format_goals_markdown(),
+    )
+    transcript.record_status("Goal", f"Set linked_dir for {entry.entry_id}: {action}")
 
 
 def _perform_goal_switch(runtime: OhMyRuntime, transcript: SessionTranscriptWriter, goal_id: str) -> None:
@@ -1895,9 +2326,18 @@ async def _generate_daily_plan(
 
     today_plan_content, _ = read_today_plan()
 
+    # Long plan context
+    long_plan_text = ""
+    longplan: LongPlanService | None = runtime.engine.tool_metadata.get("longplan")
+    if longplan is not None and longplan.is_enabled():
+        long_plan_text = longplan.format_for_daily_plan()
+
     context = f"""\
 ## 长期战略
 {strategy_text}
+
+## 长期日程计划
+{long_plan_text if long_plan_text else "(未启用)"}
 
 ## 当前个人状态
 {status_text}
@@ -1965,6 +2405,15 @@ async def _daily_status_review(
 
     await _generate_daily_plan(runtime, transcript, status_entry)
 
+    # Long-plan tracking reminder
+    longplan: LongPlanService | None = runtime.engine.tool_metadata.get("longplan")
+    if longplan is not None and longplan.is_enabled():
+        overdue = longplan.get_today_milestones()
+        if overdue:
+            names = ", ".join(m.name for m in overdue[:3])
+            more = f" 等{len(overdue)}项" if len(overdue) > 3 else ""
+            print_status(f"[长期计划] 今日有到期里程碑: {names}{more}。使用 /longplan track 追踪执行情况。")
+
 
 async def _handle_status_command(
     runtime: OhMyRuntime,
@@ -2028,16 +2477,45 @@ async def _handle_status_command(
     print_error("Usage: /status | /status system | /status update | /status fields [add|remove|list]")
 
 
-async def _handle_strategy_command(runtime: OhMyRuntime, instruction: str) -> None:
+def _build_strategy_discuss_prompt() -> str:
+    content = read_strategy()
+    if not content.strip():
+        return (
+            "你尚未设定长期发展战略。在对话中与AI讨论你的人生/职业方向，AI会帮你逐步形成战略文档。\n\n"
+            "战略讨论的三条准则：\n"
+            "1. **未来趋势性**：该策略是否代表了未来长期的发展趋势？是否能经得起时间考验？\n"
+            "2. **基础性**：该策略是否聚焦于基础性能力或方向（如编程、语言、思维框架等）？\n"
+            "3. **可实现性**：该策略是否可行？实施过程中可能遇到哪些困难？有哪些解决方法？\n\n"
+            "请先说说你想讨论的方向或想法。"
+        )
+    return (
+        "以下是当前的长期策略：\n\n"
+        f"{content}\n\n"
+        "请基于三条准则审视当前策略：\n"
+        "1. **未来趋势性**：该策略是否代表了未来长期的发展趋势？是否能经得起时间考验？\n"
+        "2. **基础性**：该策略是否聚焦于基础性能力或方向（如编程、语言、思维框架等）？\n"
+        "3. **可实现性**：该策略是否可行？实施过程中可能遇到哪些困难？有哪些解决方法？\n\n"
+        "请说说你想在哪些方面修改或完善当前策略。"
+    )
+
+
+async def _handle_strategy_command(runtime: OhMyRuntime, instruction: str, transcript: SessionTranscriptWriter | None = None) -> None:
     cleaned = instruction.strip()
+    if cleaned == "discuss":
+        await _stream_prompt(runtime, _build_strategy_discuss_prompt(), transcript)
+        return
     if cleaned:
-        print_error("Usage: /strategy — 查看当前长期战略。战略应通过日常对话中与AI讨论后自然调整。")
+        print_error("Usage: /strategy | /strategy discuss — 查看长期战略或发起讨论。")
         return
     content = read_strategy()
     if not content.strip():
         print_status("尚未设定长期发展战略。在对话中与AI讨论你的人生/职业方向，AI会帮你逐步形成战略文档。")
+        print()
+        print_status('使用 /strategy discuss 发起讨论，或直接在对话中说"我想修改长期策略"。')
         return
     print_markdown(content)
+    print()
+    print_status('如需修改，使用 /strategy discuss 或直接在对话中说"我想修改长期策略"。')
 
 
 async def _handle_coping_command(runtime: OhMyRuntime, instruction: str) -> None:
@@ -2077,6 +2555,9 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
 
     scheduler = SchedulerService()
     runtime.engine.tool_metadata["scheduler"] = scheduler
+
+    longplan_service = LongPlanService()
+    runtime.engine.tool_metadata["longplan"] = longplan_service
 
     _register_os_shutdown_handler(scheduler)
 
@@ -2141,7 +2622,7 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         if stripped == "/exit":
             if not has_today_status():
                 print_status("今日状态尚未记录。下次打开时请使用 /status 更新。")
-            print_status("建议留出时间思考长期发展战略，下次打开时可与AI讨论。")
+            print_status("建议留出时间思考长期发展战略，下次打开时可使用 /strategy discuss 与AI讨论。")
             if runtime.active_goal_id:
                 await _maybe_prompt_memory_update_on_leave(runtime, transcript)
             else:
@@ -2173,7 +2654,7 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
             continue
         if stripped == "/strategy" or stripped.startswith("/strategy "):
             instruction = stripped[len("/strategy") :].strip()
-            await _handle_strategy_command(runtime, instruction)
+            await _handle_strategy_command(runtime, instruction, transcript)
             continue
         if stripped == "/coping" or stripped.startswith("/coping "):
             instruction = stripped[len("/coping") :].strip()
@@ -2205,6 +2686,10 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         if stripped == "/schedule" or stripped.startswith("/schedule "):
             instruction = stripped[len("/schedule") :].strip()
             _handle_schedule_command(scheduler, instruction)
+            continue
+        if stripped == "/longplan" or stripped.startswith("/longplan "):
+            instruction = stripped[len("/longplan") :].strip()
+            await _handle_longplan_command(longplan_service, runtime, transcript, instruction)
             continue
         if stripped == "/clear":
             runtime.engine.clear()

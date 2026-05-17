@@ -17,3 +17,8 @@ ENV/
 .vscode/
 .idea/
 *.log
+pytest-temp*/
+.pytest-temp*/
+tmp-home-*/
+src/ohmyself/tmp-*/
+src/ohmyself/image.png
