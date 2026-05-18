@@ -53,6 +53,7 @@ class StatusEntry:
     risks: list[str]
     preparations: list[str]
     notes: str
+    daily_context: str
     updated_at: str
 
     def to_payload(self) -> dict[str, Any]:
@@ -63,6 +64,7 @@ class StatusEntry:
             "risks": self.risks,
             "preparations": self.preparations,
             "notes": self.notes,
+            "daily_context": self.daily_context,
             "updated_at": self.updated_at,
         }
 
@@ -75,6 +77,7 @@ class StatusEntry:
             risks=payload.get("risks") or [],
             preparations=payload.get("preparations") or [],
             notes=str(payload.get("notes", "")),
+            daily_context=str(payload.get("daily_context", "")),
             updated_at=str(payload.get("updated_at", "")),
         )
 
@@ -144,6 +147,10 @@ def _format_status_markdown(entry: StatusEntry, fields: list[str]) -> str:
         lines.append("## 应对准备")
         for p in entry.preparations:
             lines.append(f"- {p}")
+    if entry.daily_context:
+        lines.append("")
+        lines.append("## 今日上下文（学习重点、特殊情况）")
+        lines.append(entry.daily_context)
     if entry.notes:
         lines.append("")
         lines.append("## 备注")

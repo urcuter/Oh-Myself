@@ -105,6 +105,7 @@ class UpdateUserStatusTool(BaseTool):
             risks=existing_risks,
             preparations=existing_preparations,
             notes=notes,
+            daily_context=existing.daily_context if existing else "",
             updated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
         )
 

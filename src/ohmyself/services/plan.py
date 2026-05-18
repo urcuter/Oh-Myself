@@ -104,7 +104,7 @@ def has_plan_inbox_content(for_date: date | None = None) -> bool:
         return False
 
 
-def build_plan_organize_prompt(*, goal_context: str = "", active_goal_count: int = 0, goal_limit: int = 0, strategy_context: str = "", status_context: str = "", coping_context: str = "", long_plan_context: str = "") -> str:
+def build_plan_organize_prompt(*, goal_context: str = "", active_goal_count: int = 0, goal_limit: int = 0, strategy_context: str = "", status_context: str = "", coping_context: str = "", long_plan_context: str = "", daily_context: str = "") -> str:
     today = date.today().isoformat()
     source_path = get_plan_inbox_path()
     target_path = get_plan_path()
@@ -119,6 +119,8 @@ def build_plan_organize_prompt(*, goal_context: str = "", active_goal_count: int
     coping_section = coping_context.strip() or "(no coping strategies defined)"
     long_plan_section = long_plan_context.strip() if long_plan_context.strip() else ""
     long_plan_block = f"## Long-term Schedule Plan\n{long_plan_section}\n\n" if long_plan_section else ""
+    daily_context_section = daily_context.strip() if daily_context.strip() else ""
+    daily_context_block = f"## Daily Context (Learning Focus, Special Situations)\n{daily_context_section}\n\n" if daily_context_section else ""
     return f"""\
 Organize today's plan for {today}.
 
@@ -128,7 +130,7 @@ Target display file: {target_path}
 ## Long-term Strategy
 {strategy_section}
 
-{long_plan_block}## Personal Status Context
+{long_plan_block}{daily_context_block}## Personal Status Context
 {status_section}
 
 ## Coping Strategies
@@ -147,19 +149,20 @@ Instructions:
 6. Consider the long-term strategy: tasks that align with the strategy should be prioritized.
 7. Consider the long-term schedule plan: if there are upcoming milestones this week, ensure they are reflected in today's plan.
 8. Consider relevant coping strategies: if the user's status suggests a coping rule applies, add the suggested action to the plan.
-9. If an item does not match any active goal, decide whether it is short-term or long-term:
+9. Consider the user's daily context (learning focus, special situations like interviews or internships): if provided, prioritize tasks that align with the stated learning focus or address special situations.
+10. If an item does not match any active goal, decide whether it is short-term or long-term:
    - Short-term items should stay in today's plan.
    - Long-term items should not be written into the daily plan file.
-10. If a long-term item is not covered by an active goal and active goals are already full, mention that directly in your reply and explicitly suggest focusing on an existing goal first instead of migrating that item right now.
-11. If a long-term item is not covered by an active goal and there is spare goal capacity, mention that directly in your reply and say it may deserve migration into goal tracking.
-12. Overwrite `{target_path}` with only the organized daily plan. Do not include long-term non-goal warnings in the file. Do not include raw metadata, timestamps, internal IDs, `created_at`, `source`, or any ingestion scaffolding.
-13. The output should read like a usable plan, not a log. Keep it concise and faithful to the user's intent.
-14. Prefer a structure such as:
+11. If a long-term item is not covered by an active goal and active goals are already full, mention that directly in your reply and explicitly suggest focusing on an existing goal first instead of migrating that item right now.
+12. If a long-term item is not covered by an active goal and there is spare goal capacity, mention that directly in your reply and say it may deserve migration into goal tracking.
+13. Overwrite `{target_path}` with only the organized daily plan. Do not include long-term non-goal warnings in the file. Do not include raw metadata, timestamps, internal IDs, `created_at`, `source`, or any ingestion scaffolding.
+14. The output should read like a usable plan, not a log. Keep it concise and faithful to the user's intent.
+15. Prefer a structure such as:
    - `# Daily Plan - {today}`
    - optional sections like `## Focus`, `## In Progress`, `## Next`, `## Notes`
-15. If the inbox is empty, write:
+16. If the inbox is empty, write:
    `# Daily Plan - {today}`
    followed by a short line saying there is no plan yet.
-    16. Use the `write_file` tool (not shell commands) to update `{target_path}`. Always write with UTF-8 encoding.
-    17. After updating the file, reply with one short sentence. If there are long-term non-goal items, include the warning there instead of putting it in the plan file.
+17. Use the `write_file` tool (not shell commands) to update `{target_path}`. Always write with UTF-8 encoding.
+18. After updating the file, reply with one short sentence. If there are long-term non-goal items, include the warning there instead of putting it in the plan file.
 """

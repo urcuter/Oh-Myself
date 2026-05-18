@@ -65,6 +65,7 @@ LOCAL_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/goal stop [id]", "Stop a goal"),
     ("/plan [content]", "Show today's organized plan, or add content and auto-organize it"),
     ("/schedule", "Manage scheduled tasks (os add / list / remove / shutdown / cancel)"),
+    ("/workflow [list|show|create|edit|delete]", "Manage workflows (create / list / show details / edit / delete)"),
     ("/clear", "Clear in-memory conversation history"),
     ("/continue", "Continue a paused tool loop"),
     ("/exit", "Exit Oh Myself"),
@@ -365,14 +366,32 @@ def print_goal_switch_feedback(topic: str | None) -> None:
             EVENT_INDENT, "[", label, ("] ", MUTED),
             "已切换到目标: ", (topic, f"bold {ACCENT}"),
         )
+        _CONSOLE.print(body)
+        _print_workflow_reminder()
     else:
         label = Text("goal", style=f"bold {ACCENT}")
         body = Text.assemble(
             EVENT_INDENT, "[", label, ("] ", MUTED),
             "已退出目标模式",
         )
-    _CONSOLE.print(body)
+        _CONSOLE.print(body)
     _CONSOLE.print()
+
+
+def _print_workflow_reminder() -> None:
+    """Print a workflow reminder when switching into a goal, if workflows exist."""
+    try:
+        from ohmyself.services.workflow import list_workflows
+        workflows = list_workflows(status="active")
+        if workflows:
+            reminder = Text.assemble(
+                EVENT_INDENT, "  ", ("提示: ", MUTED),
+                ("学习 / 工作请采用工作流提升效率，", f"{ACCENT}"),
+                ("使用 /workflow 查看可用工作流", MUTED),
+            )
+            _CONSOLE.print(reminder)
+    except Exception:
+        pass
 
 
 def prompt_goal_memory_update() -> bool:

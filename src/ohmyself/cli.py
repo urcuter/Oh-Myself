@@ -99,6 +99,20 @@ from ohmyself.services.strategy import (
     update_strategy,
 )
 from ohmyself.services.long_plan import LongPlanService
+from ohmyself.services.workflow import (
+    Workflow,
+    WorkflowError,
+    WorkflowNotFoundError,
+    WorkflowStep,
+    archive_workflow,
+    create_workflow,
+    delete_workflow,
+    format_workflow_detail_markdown,
+    format_workflows_list_markdown,
+    get_workflow,
+    list_workflows,
+    update_workflow,
+)
 from ohmyself.terminal_ui import (
     GOAL_CYCLE_SENTINEL,
     RestoredSessionSummary,
@@ -661,6 +675,10 @@ def _build_plan_prompt() -> str:
             long_plan_context = lp.format_for_daily_plan()
     except Exception:
         pass
+    daily_context = ""
+    today_status = get_today_status()
+    if today_status and today_status.daily_context:
+        daily_context = today_status.daily_context
     return build_plan_organize_prompt(
         goal_context=goal_context,
         active_goal_count=len(active_goals),
@@ -669,6 +687,7 @@ def _build_plan_prompt() -> str:
         status_context=status_context,
         coping_context=coping_context,
         long_plan_context=long_plan_context,
+        daily_context=daily_context,
     )
 
 
@@ -1406,6 +1425,176 @@ async def _handle_longplan_command(
         return
 
     print_error(f"未知的 longplan 子命令: {instruction}。使用 /longplan help 查看帮助。")
+
+
+async def _handle_workflow_command(
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+    instruction: str,
+) -> None:
+    cleaned = instruction.strip()
+
+    if not cleaned or cleaned == "list":
+        workflows = list_workflows()
+        print_markdown(format_workflows_list_markdown(workflows))
+        return
+
+    if cleaned.startswith("show "):
+        workflow_id = cleaned[len("show "):].strip()
+        try:
+            wf = get_workflow(workflow_id)
+            print_markdown(format_workflow_detail_markdown(wf))
+        except WorkflowNotFoundError:
+            print_error(f"工作流不存在: {workflow_id}")
+        return
+
+    if cleaned.startswith("delete "):
+        workflow_id = cleaned[len("delete "):].strip()
+        if delete_workflow(workflow_id):
+            print_success(f"已删除工作流: {workflow_id}")
+        else:
+            print_error(f"工作流不存在: {workflow_id}")
+        return
+
+    if cleaned == "create":
+        await _handle_workflow_create_ai(runtime, transcript)
+        return
+
+    if cleaned.startswith("create "):
+        await _handle_workflow_create_direct(cleaned[len("create "):].strip())
+        return
+
+    if cleaned.startswith("edit "):
+        workflow_id = cleaned[len("edit "):].strip()
+        await _handle_workflow_edit(runtime, transcript, workflow_id)
+        return
+
+    print_error(f"未知的 workflow 子命令: {instruction}。使用 `/workflow` 查看列表，`/workflow create` 创建，`/workflow show <id>` 查看详情。")
+
+
+async def _handle_workflow_create_ai(
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+) -> None:
+    """Print guidance for AI-assisted workflow creation."""
+    del runtime
+    del transcript
+    print_markdown("""# 创建新工作流
+
+直接告诉我你想创建的工作流，包括：
+- 名称和用途
+- 分类（learning/work/health/coding/general）
+- 适用条件
+- 具体步骤
+
+我会帮你用 `/workflow create` 命令创建。
+
+或者直接使用命令：
+```
+/workflow create <名称> --desc "<说明>" --category <分类> --conditions "<条件>" --steps '[{"title":"步骤1","desc":"说明"},...]'
+```""")
+
+
+async def _handle_workflow_create_direct(args: str) -> None:
+    """Parse and create a workflow from direct arguments."""
+    name = args
+    desc = ""
+    category = "general"
+    conditions = ""
+    steps_raw: list[dict[str, str]] = []
+
+    # Parse --desc
+    if " --desc " in name:
+        name, rest = name.split(" --desc ", 1)
+        if " --" in rest:
+            desc, rest = rest.split(" --", 1)
+            rest = "--" + rest
+        else:
+            desc = rest
+            rest = ""
+        name = name.strip()
+        desc = desc.strip().strip('"').strip("'")
+        name = f"{name} {rest}".strip()
+
+    # Parse --category
+    if " --category " in name:
+        parts = name.split(" --category ")
+        name = parts[0].strip()
+        rest = parts[1]
+        if " --" in rest:
+            category, rest = rest.split(" --", 1)
+            rest = "--" + rest
+        else:
+            category = rest
+            rest = ""
+        category = category.strip()
+        name = f"{name} {rest}".strip()
+
+    # Parse --conditions
+    if " --conditions " in name:
+        parts = name.split(" --conditions ")
+        name = parts[0].strip()
+        rest = parts[1]
+        if " --" in rest:
+            conditions, rest = rest.split(" --", 1)
+            rest = "--" + rest
+        else:
+            conditions = rest
+            rest = ""
+        conditions = conditions.strip().strip('"').strip("'")
+        name = f"{name} {rest}".strip()
+
+    # Parse --steps
+    if " --steps " in name:
+        parts = name.split(" --steps ", 1)
+        name = parts[0].strip()
+        steps_json = parts[1].strip().strip("'").strip('"')
+        import json as _json
+        try:
+            parsed = _json.loads(steps_json)
+            if isinstance(parsed, list):
+                steps_raw = parsed
+        except _json.JSONDecodeError:
+            print_error("无法解析 --steps 参数，请使用有效的 JSON 格式。")
+            return
+
+    name = name.strip().strip('"').strip("'")
+
+    if not name:
+        print_error("工作流名称不能为空。")
+        return
+
+    try:
+        wf = create_workflow(
+            name,
+            description=desc,
+            category=category,
+            steps=steps_raw if steps_raw else None,
+            conditions=conditions,
+        )
+        print_success(f"已创建工作流: {wf.workflow_id} — {wf.name}")
+        print_markdown(format_workflow_detail_markdown(wf))
+    except WorkflowError as exc:
+        print_error(str(exc))
+
+
+async def _handle_workflow_edit(
+    runtime: OhMyRuntime,
+    transcript: SessionTranscriptWriter,
+    workflow_id: str,
+) -> None:
+    """Print current workflow details for AI-assisted editing."""
+    del runtime
+    del transcript
+    try:
+        wf = get_workflow(workflow_id)
+    except WorkflowNotFoundError:
+        print_error(f"工作流不存在: {workflow_id}")
+        return
+
+    print_markdown(format_workflow_detail_markdown(wf))
+    console().print()
+    print_status("告诉我你想如何修改这个工作流（如：改名称、增删步骤、修改条件等），我会帮你完成。")
 
 
 def _now_str() -> str:
@@ -2221,6 +2410,7 @@ async def _parse_status_from_message(
             risks=payload.get("risks") or [],
             preparations=payload.get("preparations") or [],
             notes=str(payload.get("notes", "")),
+            daily_context=str(payload.get("daily_context", "")),
             updated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
         )
     except (json.JSONDecodeError, KeyError, TypeError):
@@ -2290,6 +2480,7 @@ Guidelines:
 - Consider active goals and their progress — push forward where momentum exists.
 - Consider risks identified in the status and include mitigation actions.
 - Consider relevant coping strategies.
+- Consider the user's stated learning focus and any special situations (interviews, internships, etc.) in the daily context.
 - Look at yesterday's plan for continuity.
 - The plan should be realistic for one day. Prioritize the most important 3-5 items.
 - If the user is low energy or not well, suggest rest and recovery items.
@@ -2332,12 +2523,17 @@ async def _generate_daily_plan(
     if longplan is not None and longplan.is_enabled():
         long_plan_text = longplan.format_for_daily_plan()
 
+    daily_context_text = status_entry.daily_context.strip() if status_entry.daily_context else ""
+
     context = f"""\
 ## 长期战略
 {strategy_text}
 
 ## 长期日程计划
 {long_plan_text if long_plan_text else "(未启用)"}
+
+## 今日补充上下文（学习重点、特殊情况）
+{daily_context_text if daily_context_text else "(未设定)"}
 
 ## 当前个人状态
 {status_text}
@@ -2402,6 +2598,17 @@ async def _daily_status_review(
         matches = await _match_coping_rules(runtime, status_entry)
         if matches:
             print_markdown(matches)
+
+    # Ask about learning focus and special situations
+    console().print()
+    print_status("今天有什么学习重点或特殊情况（如面试、实习等）？输入内容或 skip 跳过。")
+    line2 = await asyncio.to_thread(input, "> ")
+    stripped2 = line2.strip()
+    if stripped2 and stripped2.lower() != "skip":
+        status_entry.daily_context = stripped2
+        status_entry.updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        save_status(status_entry)
+        print_success("已记录今日上下文。")
 
     await _generate_daily_plan(runtime, transcript, status_entry)
 
@@ -2690,6 +2897,10 @@ async def run_repl(*, cwd: str, model: str | None, max_turns: int | None, base_u
         if stripped == "/longplan" or stripped.startswith("/longplan "):
             instruction = stripped[len("/longplan") :].strip()
             await _handle_longplan_command(longplan_service, runtime, transcript, instruction)
+            continue
+        if stripped == "/workflow" or stripped.startswith("/workflow "):
+            instruction = stripped[len("/workflow") :].strip()
+            await _handle_workflow_command(runtime, transcript, instruction)
             continue
         if stripped == "/clear":
             runtime.engine.clear()

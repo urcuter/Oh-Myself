@@ -51,12 +51,14 @@ class OhMyRuntime:
             goal_context_prompt = self.goal_context.build_goal_context_prompt()
         strategy_content = read_strategy()
         long_plan_content = self._get_long_plan_content()
+        workflow_context = self._get_workflow_context()
         self.engine.set_system_prompt(build_system_prompt(
             settings.system_prompt,
             cwd=self.cwd,
             goal_context=goal_context_prompt or None,
             strategy_content=strategy_content,
             long_plan_content=long_plan_content or None,
+            workflow_context=workflow_context,
         ))
 
     def current_model(self) -> str:
@@ -80,6 +82,9 @@ class OhMyRuntime:
         except Exception:
             pass
         return ""
+
+    def _get_workflow_context(self) -> str | None:
+        return _get_workflow_context()
 
     def switch_model(self, model_name: str) -> str:
         self.settings_overrides["model"] = model_name
@@ -178,6 +183,14 @@ class OhMyRuntime:
         self.refresh_system_prompt()
 
 
+def _get_workflow_context() -> str | None:
+    try:
+        from ohmyself.services.workflow import format_workflows_for_prompt
+        return format_workflows_for_prompt() or None
+    except Exception:
+        return None
+
+
 def _protected_paths() -> list[PathRuleConfig]:
     from ohmyself.config.paths import get_credentials_path
 
@@ -257,6 +270,8 @@ async def build_runtime(
     except Exception:
         pass
 
+    workflow_context = _get_workflow_context()
+
     engine = QueryEngine(
         api_client=resolved_api_client,
         tool_registry=tool_registry,
@@ -268,6 +283,7 @@ async def build_runtime(
             cwd=resolved_cwd,
             strategy_content=read_strategy(),
             long_plan_content=long_plan_content or None,
+            workflow_context=workflow_context,
         ),
         max_tokens=settings.max_tokens,
         max_turns=settings.max_turns,

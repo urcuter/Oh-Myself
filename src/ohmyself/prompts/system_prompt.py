@@ -192,6 +192,7 @@ def build_system_prompt(
     goal_context: str | None = None,
     strategy_content: str | None = None,
     long_plan_content: str | None = None,
+    workflow_context: str | None = None,
 ) -> str:
     resolved_env = env or get_environment_info(cwd=cwd)
     layered = _build_layered_prompt(normalize_user_system_prompt(custom_prompt))
@@ -200,6 +201,8 @@ def build_system_prompt(
         result = f"{result}\n\n## 你的长期策略\n\n{strategy_content.strip()}"
     if long_plan_content and long_plan_content.strip():
         result = f"{result}\n\n{long_plan_content.strip()}"
+    if workflow_context and workflow_context.strip():
+        result = f"{result}\n\n{workflow_context.strip()}"
     if goal_context:
         result = f"{result}\n\n{goal_context}"
     return result
